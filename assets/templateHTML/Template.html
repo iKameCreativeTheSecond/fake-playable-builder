@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="ad.size" content="width=100%,height=100%">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,user-scalable=no,initial-scale=1,minimum-scale=1,maximum-scale=1,minimal-ui=true">
+    <title>iKame Game | 250119_PAIH_iGCH_2Step</title>
+    <style>
+        body, html {
+            padding: 0;
+            margin: 0;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+        }
+        video {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            display: none;
+            /* z-index: 1; */
+        }
+        .blur-background {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(1);
+            filter: blur(25px);
+            width: 100vw;
+            height: 100vh;
+            /* z-index: 0; */
+            display: none;
+        }
+
+        #overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0);
+            z-index: 9999;
+        }
+    </style>
+    <script>
+        let mp4_portrait = "data:video/mp4;base64, (THAY ĐOẠN MÃ BASE64 CONVERT TỪ VIDEO VÀO ĐÂY)"
+        let currentOrientation = "";
+    </script>
+    <script>
+        function isTablet() {
+            const userAgent = navigator.userAgent.toLowerCase();
+            const isTablet = /(ipad|tablet|(android(?!.*mobile))|(windows(?!.*phone)(.*touch))|kindle|playbook|silk|(puffin(?!.*(IP|AP|WP))))/.test(userAgent);
+            return isTablet;
+        }
+
+        function handleSize() {
+            const video = document.getElementById('video');
+            const bgVideo = document.getElementById('background-video');
+
+            // Portrait
+            if (window.innerWidth < window.innerHeight) {
+                if (currentOrientation !== "portrait") {
+                    currentOrientation = "portrait";
+
+                    video.style.display = "initial";
+                    bgVideo.style.display = "initial"; //none
+
+                    if (isTablet()) {
+                        video.style.width = "auto";
+                        video.style.height = "100vh";
+                    } else {
+                        video.style.width = "100vw";
+                        video.style.height = "auto";
+
+                        bgVideo.style.width = "auto";
+                        bgVideo.style.height = "100vh";
+                    }
+                }
+            } 
+            else {
+                if (currentOrientation !== "landscape") {
+                    currentOrientation = "landscape";
+                    video.style.display = "initial";
+                    bgVideo.style.display = "initial";
+
+                    video.style.width = "auto";
+                    video.style.height = "100vh";
+
+                    bgVideo.style.width = "100vw";
+                    bgVideo.style.height = "auto";
+                }
+            }
+        }
+        
+        function showVideo() {
+            const video = document.getElementById('video');
+            const bgVideo = document.getElementById('background-video');
+
+            video.src = mp4_portrait;
+            bgVideo.src = mp4_portrait;
+
+            video.load();
+            video.play();
+
+            bgVideo.load();
+            bgVideo.play();
+
+            handlerLogic();
+        }
+
+        const frameRate = 30;
+        let state = 0;
+        let totalFrames = 0
+        let currentFrame = 0;
+
+        window.addEventListener("change-state", function() {
+            state++;
+        });
+
+        function handlerLogic() {
+            const video = document.getElementById('video');
+            const bgVideo = document.getElementById('background-video');
+
+            video.addEventListener("loadedmetadata", function() {
+                const videoDuration = video.duration;
+                totalFrames = Math.floor(videoDuration * frameRate);
+                state = 1;
+                requestAnimationFrame(loopFrame);
+            });
+
+            function loopFrame() {
+                currentFrame = Math.round(video.currentTime * frameRate);
+                requestAnimationFrame(loopFrame);
+
+                switch (state) {
+		    // Đoạn này để chạy loop tutorial
+                    case 1: 
+                        if (currentFrame === 31) video.currentTime = bgVideo.currentTime = 0 / frameRate; //frame to time
+                    break;
+		    // Đoạn này để chiếu phần chơi, xong thì chuyển qua phần loop tutorial hoặc ending	
+                    case 2: 
+                        //no loop
+                        if (currentFrame >= 97) window.dispatchEvent(new CustomEvent("change-state"));
+                    break;
+		    // Nếu không còn phần loop tutorial nào nữa thì ending
+                    case 3: 
+                        if (currentFrame === totalFrames - 2) video.currentTime = bgVideo.currentTime = 226 / frameRate; //frame to time
+                    break;
+                }
+            }
+        }
+
+        window.onresize = function(event) {
+            handleSize();
+        };
+
+        window.onload = function() {
+            handleSize();
+            showVideo();
+        };
+    </script>
+    <script>
+        let stateClick = {
+            state_1: 0,
+            state_3: 0, 
+            state_5: 0,
+        }
+        function eventClick(event) {
+            const video = document.getElementById('video');
+            const bgVideo = document.getElementById('background-video');
+
+            switch (state) {
+                case 1: 
+                    if (!stateClick.state_1) {
+                        video.currentTime = bgVideo.currentTime = 31 / frameRate;
+                        window.dispatchEvent(new CustomEvent("change-state"));
+                    }
+                    stateClick.state_1++;
+                break;
+                case 3:
+                    const linkDownload = "https://play.google.com/store/apps/details?id=com.ig.cannon.heroes";
+                    if (window.mraid) {
+                        window.mraid.open();
+                    } else {
+                        window.open(linkDownload, "_blank");
+                    }
+                break;
+            }
+        }
+    </script>
+</head>
+<body>
+    <video id="background-video" class="blur-background" muted autoplay playsinline loop></video>
+    <video id="video" playsinline autoplay muted loop></video>
+    <div id="overlay" ontouchstart="eventClick(event)" onmousedown="eventClick(event)"></div>
+</body>
+</html>
