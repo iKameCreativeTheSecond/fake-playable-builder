@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fake Playable Builder</title>
+  <link rel="stylesheet" href="builder/style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1 class="h1">Fake Playable Builder</h1>
+
+    <section class="card">
+      <h2 class="h2">Inputs</h2>
+
+      <div class="field">
+        <label class="label" for="titleInput">Title (sets &lt;title&gt;)</label>
+        <input class="input" id="titleInput" type="text" placeholder="e.g. iKame Game | 250119_PAIH_iGCH_2Step" />
+      </div>
+
+      <div class="field">
+        <label class="label" for="clickUrlInput">Click URL (sets linkDownload)</label>
+        <input class="input" id="clickUrlInput" type="url" placeholder="https://play.google.com/store/apps/details?id=..." />
+      </div>
+
+      <div class="field">
+        <div class="label">Video MP4 (drag & drop or choose)</div>
+        <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="Drop MP4 here or click to choose">
+          <div class="drop-zone__text">
+            <div><strong>Drop MP4 here</strong> or click to choose</div>
+            <div class="muted" id="fileMeta">No file selected</div>
+          </div>
+          <input id="fileInput" class="file-input" type="file" accept="video/mp4" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="exportBtn" class="btn" type="button" disabled>Export single HTML</button>
+        <button id="previewBtn" class="btn btn--secondary" type="button" disabled>Preview</button>
+        <div id="status" class="status muted"></div>
+      </div>
+
+      <div class="note muted">
+        Template source: <code>assets/templateHTML/Template.html</code>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="h2">Preview</h2>
+      <div class="muted" id="previewNote">Click Preview after selecting an MP4.</div>
+      <iframe id="previewFrame" class="preview" allow="autoplay" title="Preview"></iframe>
+    </section>
+  </main>
+
+  <script src="builder/app.js"></script>
+</body>
+</html>

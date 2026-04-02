@@ -1,0 +1,138 @@
+:root {
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: #f6f7f9;
+  color: #111;
+}
+
+.container {
+  max-width: 760px;
+  margin: 32px auto;
+  padding: 0 16px;
+}
+
+.h1 {
+  margin: 0 0 16px;
+  font-size: 22px;
+}
+
+.h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.field {
+  margin: 12px 0;
+}
+
+.label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: #111;
+}
+
+.input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.drop-zone {
+  position: relative;
+  border: 2px dashed #d1d5db;
+  border-radius: 12px;
+  padding: 18px;
+  background: #fafafa;
+  cursor: pointer;
+  outline: none;
+}
+
+.drop-zone:focus {
+  border-color: #6b7280;
+}
+
+.drop-zone--active {
+  border-color: #111827;
+  background: #f3f4f6;
+}
+
+.drop-zone__text {
+  pointer-events: none;
+}
+
+.file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.btn {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid #111827;
+  background: #111827;
+  color: #fff;
+  font-size: 14px;
+}
+
+.btn--secondary {
+  background: #fff;
+  color: #111827;
+}
+
+.btn[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status {
+  font-size: 13px;
+  min-height: 18px;
+}
+
+.muted {
+  color: #6b7280;
+}
+
+.note {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.preview {
+  width: 100%;
+  height: 540px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #000;
+  margin-top: 10px;
+}
