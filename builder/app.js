@@ -46,6 +46,7 @@ let isPlayheadDragging = false;
 let lastPreviewStateId = null;
 let previewWasPlaying = false;
 let toastTimer = 0;
+let pendingAdvanceStateId = null;
 
 function showToast(message, durationMs = 3000) {
   if (!toastEl) return;
@@ -186,6 +187,8 @@ function setSelectedFile(file) {
   videoDuration = 0;
   states = [];
   selectedStateId = null;
+  pendingAdvanceStateId = null;
+  lastPreviewStateId = null;
   timelineMeta.textContent = "";
   renderTimeline();
   renderStates();
@@ -233,6 +236,7 @@ function renderPreview() {
 
   // Reset state-entry tracker so openOnEnter fires correctly after reload.
   lastPreviewStateId = null;
+  pendingAdvanceStateId = null;
 
   // Pause before reloading so controlVideo.currentTime is stable when the
   // load handler later calls syncPreviewToControl; resume afterwards.
@@ -419,6 +423,11 @@ function runPreviewStateMachine() {
     if (prevIdx >= 0) {
       const prev = states[prevIdx];
       if (prev.loop && !controlVideo.paused && t >= prev.end - (1 / FRAME_RATE)) {
+        // User interacted during this loop state: allow the video to continue
+        // naturally into the next state instead of seeking back to prev.start.
+        if (pendingAdvanceStateId === prev.id) {
+          return;
+        }
         setAllCurrentTime(prev.start);
         return;
       }
@@ -430,12 +439,20 @@ function runPreviewStateMachine() {
 
   // Detect state entry (only fires once per transition).
   if (cur.id !== lastPreviewStateId) {
+    if (pendingAdvanceStateId !== null && pendingAdvanceStateId !== cur.id) {
+      pendingAdvanceStateId = null;
+    }
     lastPreviewStateId = cur.id;
     if (cur.openOnEnter) previewTriggerDownload("Open download on enter");
   }
 
   // Loop guard on current state (handles the common in-state case).
-  if (cur.loop && !controlVideo.paused && t >= cur.end - (1 / FRAME_RATE)) {
+  if (
+    cur.loop
+    && !controlVideo.paused
+    && pendingAdvanceStateId !== cur.id
+    && t >= cur.end - (1 / FRAME_RATE)
+  ) {
     setAllCurrentTime(cur.start);
   }
 }
@@ -952,7 +969,20 @@ previewFrame.addEventListener("load", () => {
       if (overlay) {
         overlay.addEventListener("click", () => {
           const cur = selectStateByTime(controlVideo.currentTime || 0);
-          if (cur && cur.openOnClick) previewTriggerDownload("Open download on click");
+          if (!cur) return;
+
+          // If this is a loop state, clicking allows it to continue into the
+          // next state when the current loop reaches its end.
+          if (cur.loop) {
+            const curIdx = getStateIndexById(cur.id);
+            const next = states[curIdx + 1];
+            if (next) {
+              pendingAdvanceStateId = cur.id;
+              showToast(`Will continue to State ${curIdx + 2} at ${formatTime(cur.end)}.`);
+            }
+          }
+
+          if (cur.openOnClick) previewTriggerDownload("Open download on click");
         });
       }
     }
