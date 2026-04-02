@@ -16,6 +16,7 @@ const controlVideo = document.getElementById("controlVideo");
 const timelineEl = document.getElementById("timeline");
 const timelineMeta = document.getElementById("timelineMeta");
 const statesList = document.getElementById("statesList");
+const toastEl = document.getElementById("toast");
 
 const playBtn = document.getElementById("playBtn");
 const pauseBtn = document.getElementById("pauseBtn");
@@ -31,6 +32,7 @@ let videoDuration = 0;
 let states = [];
 let selectedStateId = null;
 let nextStateId = 1;
+const stateElements = new Map();
 
 const MIN_GAP_SEC = 0.01;
 const FRAME_RATE = 30;
@@ -40,6 +42,20 @@ let previewSyncRaf = 0;
 
 let playheadHandleEl = null;
 let isPlayheadDragging = false;
+
+let lastPreviewStateId = null;
+let previewWasPlaying = false;
+let toastTimer = 0;
+
+function showToast(message, durationMs = 3000) {
+  if (!toastEl) return;
+  clearTimeout(toastTimer);
+  toastEl.textContent = message;
+  toastEl.classList.add("toast--visible");
+  toastTimer = setTimeout(() => {
+    toastEl.classList.remove("toast--visible");
+  }, durationMs);
+}
 
 function setStatus(message) {
   statusEl.textContent = message || "";
@@ -215,14 +231,17 @@ function renderPreview() {
     (m) => `${m}\n    <script>window.__BUILDER_PREVIEW__ = true;</script>`
   );
 
+  // Reset state-entry tracker so openOnEnter fires correctly after reload.
+  lastPreviewStateId = null;
+
+  // Pause before reloading so controlVideo.currentTime is stable when the
+  // load handler later calls syncPreviewToControl; resume afterwards.
+  previewWasPlaying = !controlVideo.paused;
+  if (previewWasPlaying) pauseAll();
+
   // srcdoc avoids extra file creation and refreshes instantly.
   previewFrame.srcdoc = previewOut;
-  previewNote.textContent = "Preview updated.";
-
-  // Try to align preview playback with current playhead.
-  setTimeout(() => {
-    syncPreviewToControl(true);
-  }, 0);
+  previewNote.textContent = "Preview updated. Thay đổi state (loop, flags, timing) có hiệu lực ngay — không cần bấm Preview lại.";
 }
 
 function clamp(value, min, max) {
@@ -251,9 +270,16 @@ function getSelectedState() {
 }
 
 function setSelectedState(id) {
+  if (selectedStateId !== null) {
+    const old = stateElements.get(selectedStateId);
+    if (old) old.classList.remove("state--selected");
+  }
   selectedStateId = id;
+  if (id !== null) {
+    const el = stateElements.get(id);
+    if (el) el.classList.add("state--selected");
+  }
   renderTimeline();
-  renderStates();
 }
 
 function resetStates(durationSec) {
@@ -362,10 +388,51 @@ function stopPreviewSyncLoop() {
   }
 }
 
+function openDownload() {
+  const url = clickUrlInput.value.trim();
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+// In builder preview: show toast feedback instead of (or in addition to) opening URL.
+// "openOnEnter" fires from RAF — window.open would be popup-blocked by the browser.
+function previewTriggerDownload(trigger) {
+  const url = clickUrlInput.value.trim();
+  const urlLabel = url ? url : "(chưa điền Click URL)";
+  showToast(`🔗 ${trigger}: ${urlLabel}`);
+  // For click-based trigger the parent context IS a user gesture — try to open too.
+  if (trigger === "Open download on click" && url) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+function runPreviewStateMachine() {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) return;
+
+  const t = controlVideo.currentTime;
+  const cur = selectStateByTime(t);
+  if (!cur) return;
+
+  // Detect state entry (only fires once per transition).
+  if (cur.id !== lastPreviewStateId) {
+    lastPreviewStateId = cur.id;
+    if (cur.openOnEnter) previewTriggerDownload("Open download on enter");
+  }
+
+  // Loop: seek back to start when video hits the end of this state.
+  if (cur.loop && !controlVideo.paused) {
+    const threshold = cur.end - (0.5 / FRAME_RATE);
+    if (t >= threshold) {
+      setAllCurrentTime(cur.start);
+    }
+  }
+}
+
 function startPreviewSyncLoop() {
   stopPreviewSyncLoop();
   const tick = () => {
     updatePlayhead();
+    runPreviewStateMachine();
     syncPreviewToControl(false);
     if (!controlVideo.paused && !controlVideo.ended) {
       previewSyncRaf = requestAnimationFrame(tick);
@@ -504,6 +571,7 @@ function removeState(id) {
 
 function renderStates() {
   statesList.innerHTML = "";
+  stateElements.clear();
   if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
     return;
   }
@@ -512,6 +580,10 @@ function renderStates() {
   states.forEach((s, idx) => {
     const wrap = document.createElement("div");
     wrap.className = "state" + (s.id === selectedStateId ? " state--selected" : "");
+    stateElements.set(s.id, wrap);
+
+    // Selecting a state card only toggles CSS (no DOM rebuild).
+    wrap.addEventListener("pointerdown", () => setSelectedState(s.id));
 
     const title = document.createElement("div");
     title.className = "state__title";
@@ -550,7 +622,6 @@ function renderStates() {
     startInput.step = "0.01";
     startInput.value = String(s.start.toFixed(2));
     startInput.disabled = idx === 0;
-    startInput.addEventListener("focus", () => setSelectedState(s.id));
     startInput.addEventListener("change", () => {
       const i = getStateIndexById(s.id);
       if (i <= 0) return;
@@ -580,7 +651,6 @@ function renderStates() {
     endInput.step = "0.01";
     endInput.value = String(s.end.toFixed(2));
     endInput.disabled = idx === states.length - 1;
-    endInput.addEventListener("focus", () => setSelectedState(s.id));
     endInput.addEventListener("change", () => {
       const i = getStateIndexById(s.id);
       if (i < 0 || i >= states.length - 1) return;
@@ -612,7 +682,6 @@ function renderStates() {
       const input = document.createElement("input");
       input.type = "checkbox";
       input.checked = Boolean(checked);
-      input.addEventListener("focus", () => setSelectedState(s.id));
       input.addEventListener("change", () => onChange(input.checked));
       const txt = document.createElement("span");
       txt.textContent = labelText;
@@ -847,6 +916,54 @@ controlVideo.addEventListener("play", () => {
 
 controlVideo.addEventListener("pause", () => {
   stopPreviewSyncLoop();
+});
+
+// If the last state has loop=true and the video file reaches its natural end,
+// restart the loop manually (since the controlVideo has loop=false).
+controlVideo.addEventListener("ended", () => {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) return;
+  const last = states[states.length - 1];
+  if (last && last.loop) {
+    setAllCurrentTime(last.start);
+    playAll();
+  }
+});
+
+// Wire openOnClick for the preview overlay.
+// Also sync playhead and resume play state after every iframe reload.
+previewFrame.addEventListener("load", () => {
+  // Attach overlay click listener immediately (doesn't require video to be ready).
+  try {
+    const doc = previewFrame.contentDocument;
+    if (doc) {
+      const overlay = doc.getElementById("overlay");
+      if (overlay) {
+        overlay.addEventListener("click", () => {
+          const cur = selectStateByTime(controlVideo.currentTime || 0);
+          if (cur && cur.openOnClick) previewTriggerDownload("Open download on click");
+        });
+      }
+    }
+  } catch {
+    // Cross-origin guard — safe to ignore.
+  }
+
+  // Wait for the iframe video to finish its own .load() call before seeking;
+  // otherwise the seek is silently dropped (race with video.load() in Template).
+  // Retry up to 5 times, 80ms apart (~400ms max).
+  const trySync = (attemptsLeft) => {
+    const vids = getPreviewVideos();
+    if (!vids) {
+      if (attemptsLeft > 0) setTimeout(() => trySync(attemptsLeft - 1), 80);
+      return;
+    }
+    syncPreviewToControl(true);
+    if (previewWasPlaying) {
+      previewWasPlaying = false;
+      playAll();
+    }
+  };
+  setTimeout(() => trySync(5), 100);
 });
 
 // Preview controls
