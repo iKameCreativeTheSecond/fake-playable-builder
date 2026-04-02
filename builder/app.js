@@ -360,6 +360,7 @@ function resetStates(durationSec) {
     start: 0,
     end: duration,
     loop: false,
+    exitOnClick: false,
     openOnEnter: false,
     openOnClick: false,
   };
@@ -836,6 +837,14 @@ function renderStates() {
     );
 
     checks.appendChild(
+      mkCheck("Exit on click", s.exitOnClick, (v) => {
+        const i = getStateIndexById(s.id);
+        if (i < 0) return;
+        states[i].exitOnClick = v;
+      })
+    );
+
+    checks.appendChild(
       mkCheck("Open download on enter", s.openOnEnter, (v) => {
         const i = getStateIndexById(s.id);
         if (i < 0) return;
@@ -911,6 +920,7 @@ function buildExportHandlerCode(states, clickUrl) {
       start: parseFloat(s.start.toFixed(4)),
       end: parseFloat(s.end.toFixed(4)),
       loop: Boolean(s.loop),
+      exitOnClick: Boolean(s.exitOnClick),
       openOnEnter: Boolean(s.openOnEnter),
       openOnClick: Boolean(s.openOnClick),
     })),
@@ -939,6 +949,15 @@ function buildExportHandlerCode(states, clickUrl) {
             window.__bClick = function () {
                 var c = _states[_idx];
                 if (!c) return;
+                // exitOnClick: skip to the next state immediately.
+                if (c.exitOnClick && _idx < _states.length - 1) {
+                    _idx++;
+                    _unlocked = false;
+                    state = _idx + 1;
+                    _v.currentTime = _bg.currentTime = _states[_idx].start;
+                    if (_states[_idx].openOnEnter) _open();
+                    return;
+                }
                 if (c.openOnClick) _open();
                 // Unlock a looping state so it can advance to the next state after
                 // the current loop iteration finishes naturally.
@@ -1181,10 +1200,20 @@ previewFrame.addEventListener("load", () => {
           const cur = selectStateByTimeBiased(controlVideo.currentTime || 0, lastPreviewStateId);
           if (!cur) return;
 
+          const curIdx = getStateIndexById(cur.id);
+
+          // exitOnClick: immediately jump to the next state.
+          // Must unlock first so the loop guard doesn't loop back when t reaches cur.end.
+          if (cur.exitOnClick && states[curIdx + 1]) {
+            const rt = getStateRuntime(cur.id);
+            if (rt) rt.unlocked = true;
+            setAllCurrentTimeKeepingPlay(cur.end);
+            return;
+          }
+
           // If this is a loop state, clicking allows it to continue into the
           // next state when the current loop reaches its end.
           if (cur.loop) {
-            const curIdx = getStateIndexById(cur.id);
             const next = states[curIdx + 1];
             if (next) {
               const rt = getStateRuntime(cur.id);
