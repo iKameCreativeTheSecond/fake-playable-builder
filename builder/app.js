@@ -16,6 +16,7 @@ const controlVideo = document.getElementById("controlVideo");
 const timelineEl = document.getElementById("timeline");
 const timelineMeta = document.getElementById("timelineMeta");
 const statesList = document.getElementById("statesList");
+const runtimeStatusEl = document.getElementById("runtimeStatus");
 const toastEl = document.getElementById("toast");
 
 const playBtn = document.getElementById("playBtn");
@@ -46,7 +47,59 @@ let isPlayheadDragging = false;
 let lastPreviewStateId = null;
 let previewWasPlaying = false;
 let toastTimer = 0;
-let pendingAdvanceStateId = null;
+let wantPlaying = false;
+let isProgrammaticSeek = false;
+let _programmaticSeekResetTimer = 0;
+
+const stateRuntimeById = new Map();
+
+function getStateRuntime(id) {
+  if (id === null || id === undefined) return null;
+  let rt = stateRuntimeById.get(id);
+  if (!rt) {
+    rt = {
+      unlocked: false,
+    };
+    stateRuntimeById.set(id, rt);
+  }
+  return rt;
+}
+
+function getUnlockedStateId() {
+  for (const [id, rt] of stateRuntimeById.entries()) {
+    if (rt && rt.unlocked) return id;
+  }
+  return null;
+}
+
+function resetPreviewRuntimeFlags() {
+  lastPreviewStateId = null;
+  stateRuntimeById.clear();
+  updateRuntimeStatus();
+}
+
+function updateRuntimeStatus() {
+  if (!runtimeStatusEl) return;
+
+  const unlockedId = getUnlockedStateId();
+  if (unlockedId === null) {
+    runtimeStatusEl.textContent = "";
+    runtimeStatusEl.classList.remove("runtime-status--visible");
+    return;
+  }
+
+  const stateIndex = getStateIndexById(unlockedId);
+  if (stateIndex < 0 || stateIndex >= states.length - 1) {
+    runtimeStatusEl.textContent = "";
+    runtimeStatusEl.classList.remove("runtime-status--visible");
+    return;
+  }
+
+  const current = states[stateIndex];
+  const next = states[stateIndex + 1];
+  runtimeStatusEl.textContent = `Runtime: State ${stateIndex + 1} will continue to State ${stateIndex + 2} at ${formatTime(current.end)}. Settings unchanged.`;
+  runtimeStatusEl.classList.add("runtime-status--visible");
+}
 
 function showToast(message, durationMs = 3000) {
   if (!toastEl) return;
@@ -187,8 +240,7 @@ function setSelectedFile(file) {
   videoDuration = 0;
   states = [];
   selectedStateId = null;
-  pendingAdvanceStateId = null;
-  lastPreviewStateId = null;
+  resetPreviewRuntimeFlags();
   timelineMeta.textContent = "";
   renderTimeline();
   renderStates();
@@ -235,8 +287,7 @@ function renderPreview() {
   );
 
   // Reset state-entry tracker so openOnEnter fires correctly after reload.
-  lastPreviewStateId = null;
-  pendingAdvanceStateId = null;
+  resetPreviewRuntimeFlags();
 
   // Pause before reloading so controlVideo.currentTime is stable when the
   // load handler later calls syncPreviewToControl; resume afterwards.
@@ -270,6 +321,11 @@ function getStateIndexById(id) {
 
 function getSelectedState() {
   const index = getStateIndexById(selectedStateId);
+  return index >= 0 ? states[index] : null;
+}
+
+function getStateById(id) {
+  const index = getStateIndexById(id);
   return index >= 0 ? states[index] : null;
 }
 
@@ -414,46 +470,51 @@ function runPreviewStateMachine() {
   if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) return;
 
   const t = controlVideo.currentTime;
+  const previousState = lastPreviewStateId !== null ? getStateById(lastPreviewStateId) : null;
+  const threshold = 1 / FRAME_RATE;
 
   // Loop guard: check the PREVIOUSLY active state first.
   // Reason: if a RAF tick jumps past cur.end in one frame, selectStateByTime
   // already returns the NEXT state — so checking loop on 'cur' would be too late.
-  if (lastPreviewStateId !== null) {
-    const prevIdx = getStateIndexById(lastPreviewStateId);
-    if (prevIdx >= 0) {
-      const prev = states[prevIdx];
-      if (prev.loop && !controlVideo.paused && t >= prev.end - (1 / FRAME_RATE)) {
-        // User interacted during this loop state: allow the video to continue
-        // naturally into the next state instead of seeking back to prev.start.
-        if (pendingAdvanceStateId === prev.id) {
-          return;
-        }
-        setAllCurrentTime(prev.start);
-        return;
-      }
+  if (previousState && previousState.loop && wantPlaying && t >= previousState.end - threshold) {
+    const prevRt = getStateRuntime(previousState.id);
+    const isUnlocked = Boolean(prevRt && prevRt.unlocked);
+
+    // Default: loop back.
+    // If user unlocked this loop state, allow it to continue naturally.
+    if (!isUnlocked) {
+      setAllCurrentTimeKeepingPlay(previousState.start);
+      return;
     }
   }
 
-  const cur = selectStateByTime(t);
+  const cur = selectStateByTimeBiased(t, lastPreviewStateId);
   if (!cur) return;
 
   // Detect state entry (only fires once per transition).
   if (cur.id !== lastPreviewStateId) {
-    if (pendingAdvanceStateId !== null && pendingAdvanceStateId !== cur.id) {
-      pendingAdvanceStateId = null;
+    // Leaving previous state: clear its transient runtime so it can't bleed.
+    if (lastPreviewStateId !== null) {
+      const prevRt = getStateRuntime(lastPreviewStateId);
+      if (prevRt) prevRt.unlocked = false;
     }
+
     lastPreviewStateId = cur.id;
     if (cur.openOnEnter) previewTriggerDownload("Open download on enter");
+    updateRuntimeStatus();
   }
 
   // Loop guard on current state (handles the common in-state case).
   if (
     cur.loop
-    && !controlVideo.paused
-    && pendingAdvanceStateId !== cur.id
-    && t >= cur.end - (1 / FRAME_RATE)
+    && wantPlaying
+    && t >= cur.end - threshold
   ) {
-    setAllCurrentTime(cur.start);
+    const curRt = getStateRuntime(cur.id);
+    const isUnlocked = Boolean(curRt && curRt.unlocked);
+    if (!isUnlocked) {
+      setAllCurrentTimeKeepingPlay(cur.start);
+    }
   }
 }
 
@@ -463,7 +524,9 @@ function startPreviewSyncLoop() {
     updatePlayhead();
     runPreviewStateMachine();
     syncPreviewToControl(false);
-    if (!controlVideo.paused && !controlVideo.ended) {
+    // Keep the loop alive as long as wantPlaying is true, even if controlVideo
+    // is momentarily paused due to a seek (loop-back seek during play).
+    if (wantPlaying || (!controlVideo.paused && !controlVideo.ended)) {
       previewSyncRaf = requestAnimationFrame(tick);
     } else {
       previewSyncRaf = 0;
@@ -477,36 +540,64 @@ function syncPreviewToControl(forceSeek) {
   if (!vids) return;
   const t = clamp(controlVideo.currentTime || 0, 0, videoDuration || 0);
 
-  const maybeSeek = (v) => {
+  // Seek while playing (no pause). Seeking-while-playing = brief decode hiccup.
+  // Explicit pause→seek→play = visible freeze for the full decode window.
+  // NEVER call play() during an active seek — that causes the "stuck frame" bug.
+  [vids.main, vids.bg].forEach((v) => {
     const cur = Number.isFinite(v.currentTime) ? v.currentTime : 0;
     if (forceSeek || Math.abs(cur - t) > 0.06) {
-      try {
-        v.currentTime = t;
-      } catch {
-        // ignore
-      }
+      try { v.currentTime = t; } catch { /* ignore */ }
     }
-  };
+  });
 
-  maybeSeek(vids.main);
-  maybeSeek(vids.bg);
-
-  if (controlVideo.paused) {
-    vids.main.pause();
-    vids.bg.pause();
+  if (!wantPlaying) {
+    if (!vids.main.paused) vids.main.pause();
+    if (!vids.bg.paused) vids.bg.pause();
   } else {
-    // Best-effort play; browsers may block autoplay, but user action (button) should allow.
-    vids.main.play().catch(() => {});
-    vids.bg.play().catch(() => {});
+    // Only resume if paused AND not mid-seek (calling play() during a seek
+    // interrupts the decode in some browsers, leaving the video on the stale frame).
+    if (vids.main.paused && !vids.main.seeking) vids.main.play().catch(() => {});
+    if (vids.bg.paused && !vids.bg.seeking) vids.bg.play().catch(() => {});
   }
 }
 
 function setAllCurrentTime(timeSec) {
   const t = clamp(timeSec, 0, videoDuration || 0);
+  // Flag this seek as programmatic so controlVideo.seeked doesn't call
+  // syncPreviewToControl(true) a second time — the call below already covers it.
+  isProgrammaticSeek = true;
+  clearTimeout(_programmaticSeekResetTimer);
+  _programmaticSeekResetTimer = setTimeout(() => { isProgrammaticSeek = false; }, 400);
   controlVideo.currentTime = t;
   updateTimelineMeta();
   updatePlayhead();
   syncPreviewToControl(true);
+}
+
+function setAllCurrentTimeKeepingPlay(timeSec) {
+  const shouldPlay = wantPlaying;
+  setAllCurrentTime(timeSec);
+  if (!shouldPlay) return;
+
+  // Some browsers pause controlVideo momentarily during a programmatic seek.
+  // Re-play it when seeked completes; wantPlaying=true means syncPreviewToControl
+  // will already keep the iframe videos playing regardless of controlVideo.paused.
+  const onSeeked = () => {
+    if (wantPlaying && controlVideo.paused) {
+      controlVideo.play().catch(() => {});
+    }
+  };
+  try {
+    controlVideo.addEventListener("seeked", onSeeked, { once: true });
+  } catch {
+    // ignore
+  }
+  // Fallback in case seeked doesn't fire.
+  setTimeout(() => {
+    if (wantPlaying && controlVideo.paused) {
+      controlVideo.play().catch(() => {});
+    }
+  }, 80);
 }
 
 function setAllCurrentTimeSnapped(timeSec) {
@@ -515,15 +606,17 @@ function setAllCurrentTimeSnapped(timeSec) {
 
 function playAll() {
   if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  wantPlaying = true;
   controlVideo.play().then(() => {
     syncPreviewToControl(true);
     startPreviewSyncLoop();
   }).catch(() => {
-    // ignore
+    wantPlaying = false;
   });
 }
 
 function pauseAll() {
+  wantPlaying = false;
   controlVideo.pause();
   stopPreviewSyncLoop();
   syncPreviewToControl(false);
@@ -574,6 +667,21 @@ function selectStateByTime(timeSec) {
     if (t >= s.start && (t < s.end || (isLast && t <= s.end))) return s;
   }
   return null;
+}
+
+function selectStateByTimeBiased(timeSec, biasStateId) {
+  const picked = selectStateByTime(timeSec);
+  const bias = biasStateId !== null && biasStateId !== undefined ? getStateById(biasStateId) : null;
+  if (!bias) return picked;
+
+  // When seeking to a boundary (e.g. looping to state.start), browsers can land a
+  // few milliseconds BEFORE the requested time. That would classify into the
+  // previous state and can trigger its loop.
+  const t = clamp(timeSec, 0, videoDuration || 0);
+  const eps = 1 / FRAME_RATE;
+  if (t < bias.start && t >= bias.start - eps) return bias;
+
+  return picked;
 }
 
 function removeState(id) {
@@ -795,6 +903,98 @@ fileInput.addEventListener("change", () => {
   setSelectedFile(file);
 });
 
+// ─── Export state-machine injection ─────────────────────────────────────────
+
+function buildExportHandlerCode(states, clickUrl) {
+  const statesJson = JSON.stringify(
+    states.map((s) => ({
+      start: parseFloat(s.start.toFixed(4)),
+      end: parseFloat(s.end.toFixed(4)),
+      loop: Boolean(s.loop),
+      openOnEnter: Boolean(s.openOnEnter),
+      openOnClick: Boolean(s.openOnClick),
+    })),
+    null,
+    4
+  );
+  const urlJson = JSON.stringify(String(clickUrl || ""));
+
+  return `// @@BUILDER_HANDLER_START@@
+        function handlerLogic() {
+            var _v = document.getElementById('video');
+            var _bg = document.getElementById('background-video');
+            // Disable native loop — state machine controls all looping.
+            _v.loop = false;
+            _bg.loop = false;
+            var _states = ${statesJson};
+            var _url = ${urlJson};
+            var _idx = 0;
+            var _unlocked = false;
+            var _thr = 1 / 30;
+            function _open() {
+                if (!_url) return;
+                if (window.mraid) { window.mraid.open(_url); }
+                else { window.open(_url, '_blank'); }
+            }
+            window.__bClick = function () {
+                var c = _states[_idx];
+                if (!c) return;
+                if (c.openOnClick) _open();
+                // Unlock a looping state so it can advance to the next state after
+                // the current loop iteration finishes naturally.
+                if (c.loop && !_unlocked && _idx < _states.length - 1) _unlocked = true;
+            };
+            _v.addEventListener('loadedmetadata', function () {
+                state = 1;
+                if (_states.length && _states[0].openOnEnter) _open();
+                requestAnimationFrame(_tick);
+            });
+            function _tick() {
+                var t = _v.currentTime;
+                var c = _states[_idx];
+                if (c) {
+                    if (c.loop && !_unlocked) {
+                        // Loop back to state start.
+                        if (t >= c.end - _thr) { _v.currentTime = _bg.currentTime = c.start; }
+                    } else if (_idx < _states.length - 1 && t >= c.end - _thr) {
+                        // Advance to next state.
+                        _idx++;
+                        _unlocked = false;
+                        state = _idx + 1;
+                        if (_states[_idx].openOnEnter) _open();
+                    }
+                }
+                requestAnimationFrame(_tick);
+            }
+        }
+        // @@BUILDER_HANDLER_END@@`;
+}
+
+function applyStatesToTemplate(html, states, clickUrl) {
+  if (!states || states.length === 0) return html;
+  let out = html;
+
+  // Replace handlerLogic() with generated state machine.
+  out = out.replace(
+    /\/\/ @@BUILDER_HANDLER_START@@[\s\S]*?\/\/ @@BUILDER_HANDLER_END@@/,
+    buildExportHandlerCode(states, clickUrl)
+  );
+
+  // Replace eventClick() to delegate to the generated click handler.
+  out = out.replace(
+    /\/\/ @@BUILDER_CLICK_START@@[\s\S]*?\/\/ @@BUILDER_CLICK_END@@/,
+    `// @@BUILDER_CLICK_START@@
+        function eventClick(event) {
+            if (window.__bClick) window.__bClick();
+        }
+        // @@BUILDER_CLICK_END@@`
+  );
+
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Export
 exportBtn.addEventListener("click", async () => {
   if (!templateHtml) {
@@ -821,10 +1021,11 @@ exportBtn.addEventListener("click", async () => {
       videoDataUrl,
       clickUrl,
     });
+    const finalOut = applyStatesToTemplate(out, states, clickUrl);
 
     setStatus("Downloading...");
     const filename = `${toSafeFilename(title)}.html`;
-    downloadHtml(filename, out);
+    downloadHtml(filename, finalOut);
 
     setStatus("Done.");
   } catch (err) {
@@ -881,6 +1082,7 @@ function wirePlayheadHandleDrag() {
     e.preventDefault();
     e.stopPropagation();
 
+    resetPreviewRuntimeFlags();
     isPlayheadDragging = true;
     pauseAll();
     setAllCurrentTimeSnapped(getTimelineTimeFromClientX(e.clientX));
@@ -936,6 +1138,14 @@ controlVideo.addEventListener("timeupdate", () => {
 controlVideo.addEventListener("seeked", () => {
   updateTimelineMeta();
   updatePlayhead();
+  if (isProgrammaticSeek) {
+    // Our code already called syncPreviewToControl(true) inside setAllCurrentTime.
+    // Calling it again here would re-pause iframe videos mid-play → visible freeze.
+    isProgrammaticSeek = false;
+    clearTimeout(_programmaticSeekResetTimer);
+    return;
+  }
+  // User-initiated seek (native browser scrubbar, etc.) — sync iframe to match.
   syncPreviewToControl(true);
 });
 
@@ -968,7 +1178,7 @@ previewFrame.addEventListener("load", () => {
       const overlay = doc.getElementById("overlay");
       if (overlay) {
         overlay.addEventListener("click", () => {
-          const cur = selectStateByTime(controlVideo.currentTime || 0);
+          const cur = selectStateByTimeBiased(controlVideo.currentTime || 0, lastPreviewStateId);
           if (!cur) return;
 
           // If this is a loop state, clicking allows it to continue into the
@@ -977,7 +1187,9 @@ previewFrame.addEventListener("load", () => {
             const curIdx = getStateIndexById(cur.id);
             const next = states[curIdx + 1];
             if (next) {
-              pendingAdvanceStateId = cur.id;
+              const rt = getStateRuntime(cur.id);
+              if (rt) rt.unlocked = true;
+              updateRuntimeStatus();
               showToast(`Will continue to State ${curIdx + 2} at ${formatTime(cur.end)}.`);
             }
           }
@@ -1018,15 +1230,18 @@ pauseBtn.addEventListener("click", () => {
 });
 
 replayBtn.addEventListener("click", () => {
+  resetPreviewRuntimeFlags();
   setAllCurrentTime(0);
   playAll();
 });
 
 prevFrameBtn.addEventListener("click", () => {
+  resetPreviewRuntimeFlags();
   stepByFrames(-1);
 });
 
 nextFrameBtn.addEventListener("click", () => {
+  resetPreviewRuntimeFlags();
   stepByFrames(1);
 });
 

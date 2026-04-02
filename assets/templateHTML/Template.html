@@ -127,6 +127,7 @@
             state++;
         });
 
+        // @@BUILDER_HANDLER_START@@
         function handlerLogic() {
             const video = document.getElementById('video');
             const bgVideo = document.getElementById('background-video');
@@ -159,6 +160,7 @@
                 }
             }
         }
+        // @@BUILDER_HANDLER_END@@
 
         window.onresize = function(event) {
             handleSize();
@@ -170,6 +172,7 @@
         };
     </script>
     <script>
+        // @@BUILDER_CLICK_START@@
         let stateClick = {
             state_1: 0,
             state_3: 0, 
@@ -198,6 +201,7 @@
                 break;
             }
         }
+        // @@BUILDER_CLICK_END@@
     </script>
 </head>
 <body>
