@@ -410,6 +410,21 @@ function runPreviewStateMachine() {
   if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) return;
 
   const t = controlVideo.currentTime;
+
+  // Loop guard: check the PREVIOUSLY active state first.
+  // Reason: if a RAF tick jumps past cur.end in one frame, selectStateByTime
+  // already returns the NEXT state — so checking loop on 'cur' would be too late.
+  if (lastPreviewStateId !== null) {
+    const prevIdx = getStateIndexById(lastPreviewStateId);
+    if (prevIdx >= 0) {
+      const prev = states[prevIdx];
+      if (prev.loop && !controlVideo.paused && t >= prev.end - (1 / FRAME_RATE)) {
+        setAllCurrentTime(prev.start);
+        return;
+      }
+    }
+  }
+
   const cur = selectStateByTime(t);
   if (!cur) return;
 
@@ -419,12 +434,9 @@ function runPreviewStateMachine() {
     if (cur.openOnEnter) previewTriggerDownload("Open download on enter");
   }
 
-  // Loop: seek back to start when video hits the end of this state.
-  if (cur.loop && !controlVideo.paused) {
-    const threshold = cur.end - (0.5 / FRAME_RATE);
-    if (t >= threshold) {
-      setAllCurrentTime(cur.start);
-    }
+  // Loop guard on current state (handles the common in-state case).
+  if (cur.loop && !controlVideo.paused && t >= cur.end - (1 / FRAME_RATE)) {
+    setAllCurrentTime(cur.start);
   }
 }
 
