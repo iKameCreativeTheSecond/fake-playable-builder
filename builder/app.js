@@ -12,10 +12,34 @@ const previewBtn = document.getElementById("previewBtn");
 const statusEl = document.getElementById("status");
 const previewNote = document.getElementById("previewNote");
 const previewFrame = document.getElementById("previewFrame");
+const controlVideo = document.getElementById("controlVideo");
+const timelineEl = document.getElementById("timeline");
+const timelineMeta = document.getElementById("timelineMeta");
+const statesList = document.getElementById("statesList");
+
+const playBtn = document.getElementById("playBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+const replayBtn = document.getElementById("replayBtn");
+const prevFrameBtn = document.getElementById("prevFrameBtn");
+const nextFrameBtn = document.getElementById("nextFrameBtn");
 
 let templateHtml = "";
 let selectedFile = null;
-let previewVideoObjectUrl = null;
+let selectedFileObjectUrl = null;
+
+let videoDuration = 0;
+let states = [];
+let selectedStateId = null;
+let nextStateId = 1;
+
+const MIN_GAP_SEC = 0.01;
+const FRAME_RATE = 30;
+
+let playheadEl = null;
+let previewSyncRaf = 0;
+
+let playheadHandleEl = null;
+let isPlayheadDragging = false;
 
 function setStatus(message) {
   statusEl.textContent = message || "";
@@ -51,6 +75,16 @@ function updateUiState() {
   const canExport = Boolean(templateHtml) && Boolean(selectedFile);
   exportBtn.disabled = !canExport;
   previewBtn.disabled = !canExport;
+
+  const hasVideoMeta = Boolean(selectedFile) && Number.isFinite(videoDuration) && videoDuration > 0;
+  timelineEl.setAttribute("aria-disabled", String(!hasVideoMeta));
+
+  const canControlPreview = Boolean(selectedFileObjectUrl) && hasVideoMeta;
+  playBtn.disabled = !canControlPreview;
+  pauseBtn.disabled = !canControlPreview;
+  replayBtn.disabled = !canControlPreview;
+  prevFrameBtn.disabled = !canControlPreview;
+  nextFrameBtn.disabled = !canControlPreview;
 }
 
 async function loadTemplate() {
@@ -127,19 +161,34 @@ function toSafeFilename(inputName) {
 
 function setSelectedFile(file) {
   selectedFile = file;
-  if (previewVideoObjectUrl) {
-    URL.revokeObjectURL(previewVideoObjectUrl);
-    previewVideoObjectUrl = null;
+
+  if (selectedFileObjectUrl) {
+    URL.revokeObjectURL(selectedFileObjectUrl);
+    selectedFileObjectUrl = null;
   }
+
+  videoDuration = 0;
+  states = [];
+  selectedStateId = null;
+  timelineMeta.textContent = "";
+  renderTimeline();
+  renderStates();
+
   previewFrame.removeAttribute("srcdoc");
   previewFrame.removeAttribute("src");
   previewNote.textContent = file ? "Ready to preview." : "Click Preview after selecting an MP4.";
 
   if (!file) {
     fileMeta.textContent = "No file selected";
+    controlVideo.removeAttribute("src");
+    controlVideo.load();
     updateUiState();
     return;
   }
+
+  selectedFileObjectUrl = URL.createObjectURL(file);
+  controlVideo.src = selectedFileObjectUrl;
+  controlVideo.load();
 
   const name = file.name || "(unnamed)";
   const size = formatBytes(file.size);
@@ -153,20 +202,454 @@ function renderPreview() {
   const title = titleInput.value.trim() || "Playable";
   const clickUrl = clickUrlInput.value.trim() || "";
 
-  if (previewVideoObjectUrl) {
-    URL.revokeObjectURL(previewVideoObjectUrl);
-  }
-  previewVideoObjectUrl = URL.createObjectURL(selectedFile);
+  if (!selectedFileObjectUrl) return;
 
   const out = applyInputsToTemplate(templateHtml, {
     title,
-    videoDataUrl: previewVideoObjectUrl,
+    videoDataUrl: selectedFileObjectUrl,
     clickUrl,
   });
 
+  const previewOut = out.replace(
+    /<head(\s*)>/i,
+    (m) => `${m}\n    <script>window.__BUILDER_PREVIEW__ = true;</script>`
+  );
+
   // srcdoc avoids extra file creation and refreshes instantly.
-  previewFrame.srcdoc = out;
+  previewFrame.srcdoc = previewOut;
   previewNote.textContent = "Preview updated.";
+
+  // Try to align preview playback with current playhead.
+  setTimeout(() => {
+    syncPreviewToControl(true);
+  }, 0);
+}
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
+function formatTime(valueSec) {
+  if (!Number.isFinite(valueSec)) return "";
+  return `${valueSec.toFixed(2)}s`;
+}
+
+function snapToFrame(timeSec) {
+  const t = Number(timeSec);
+  if (!Number.isFinite(t)) return 0;
+  return Math.round(t * FRAME_RATE) / FRAME_RATE;
+}
+
+function getStateIndexById(id) {
+  return states.findIndex((s) => s.id === id);
+}
+
+function getSelectedState() {
+  const index = getStateIndexById(selectedStateId);
+  return index >= 0 ? states[index] : null;
+}
+
+function setSelectedState(id) {
+  selectedStateId = id;
+  renderTimeline();
+  renderStates();
+}
+
+function resetStates(durationSec) {
+  const duration = Math.max(0, Number(durationSec) || 0);
+  videoDuration = duration;
+  states = [];
+
+  if (duration <= 0) {
+    selectedStateId = null;
+    renderTimeline();
+    renderStates();
+    updateUiState();
+    return;
+  }
+
+  const first = {
+    id: nextStateId++,
+    start: 0,
+    end: duration,
+    loop: false,
+    openOnEnter: false,
+    openOnClick: false,
+  };
+  states.push(first);
+  selectedStateId = first.id;
+  renderTimeline();
+  renderStates();
+  updateUiState();
+}
+
+function renderTimeline() {
+  timelineEl.innerHTML = "";
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
+    timelineEl.style.opacity = "0.6";
+    return;
+  }
+  timelineEl.style.opacity = "1";
+
+  const frag = document.createDocumentFragment();
+  for (const s of states) {
+    const seg = document.createElement("div");
+    seg.className = "timeline__seg" + (s.id === selectedStateId ? " timeline__seg--selected" : "");
+    const frac = (s.end - s.start) / videoDuration;
+    seg.style.flex = `${Math.max(frac, 0)} 0 0`;
+    seg.title = `${formatTime(s.start)} → ${formatTime(s.end)}`;
+    frag.appendChild(seg);
+  }
+  timelineEl.appendChild(frag);
+
+  playheadEl = document.createElement("div");
+  playheadEl.className = "timeline__playhead";
+  playheadEl.style.left = "0px";
+  playheadHandleEl = document.createElement("div");
+  playheadHandleEl.className = "timeline__handle";
+  playheadEl.appendChild(playheadHandleEl);
+  timelineEl.appendChild(playheadEl);
+
+  wirePlayheadHandleDrag();
+  updatePlayhead();
+}
+
+function updateTimelineMeta() {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) {
+    timelineMeta.textContent = "";
+    return;
+  }
+  const t = Number.isFinite(controlVideo.currentTime) ? controlVideo.currentTime : 0;
+  const selected = getSelectedState();
+  const selectedText = selected ? ` • Selected: ${formatTime(selected.start)} → ${formatTime(selected.end)}` : "";
+  timelineMeta.textContent = `Time: ${formatTime(t)} / ${formatTime(videoDuration)}${selectedText}`;
+}
+
+function updatePlayhead() {
+  if (!playheadEl) return;
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) {
+    playheadEl.style.display = "none";
+    return;
+  }
+
+  const rect = timelineEl.getBoundingClientRect();
+  if (!rect.width) return;
+
+  playheadEl.style.display = "block";
+  const t = clamp(controlVideo.currentTime || 0, 0, videoDuration);
+  const ratio = videoDuration ? t / videoDuration : 0;
+  playheadEl.style.left = `${ratio * rect.width}px`;
+}
+
+function getPreviewVideos() {
+  try {
+    const doc = previewFrame.contentDocument;
+    if (!doc) return null;
+    const main = doc.getElementById("video");
+    const bg = doc.getElementById("background-video");
+    if (!main || !bg) return null;
+    return { main, bg };
+  } catch {
+    return null;
+  }
+}
+
+function stopPreviewSyncLoop() {
+  if (previewSyncRaf) {
+    cancelAnimationFrame(previewSyncRaf);
+    previewSyncRaf = 0;
+  }
+}
+
+function startPreviewSyncLoop() {
+  stopPreviewSyncLoop();
+  const tick = () => {
+    updatePlayhead();
+    syncPreviewToControl(false);
+    if (!controlVideo.paused && !controlVideo.ended) {
+      previewSyncRaf = requestAnimationFrame(tick);
+    } else {
+      previewSyncRaf = 0;
+    }
+  };
+  previewSyncRaf = requestAnimationFrame(tick);
+}
+
+function syncPreviewToControl(forceSeek) {
+  const vids = getPreviewVideos();
+  if (!vids) return;
+  const t = clamp(controlVideo.currentTime || 0, 0, videoDuration || 0);
+
+  const maybeSeek = (v) => {
+    const cur = Number.isFinite(v.currentTime) ? v.currentTime : 0;
+    if (forceSeek || Math.abs(cur - t) > 0.06) {
+      try {
+        v.currentTime = t;
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  maybeSeek(vids.main);
+  maybeSeek(vids.bg);
+
+  if (controlVideo.paused) {
+    vids.main.pause();
+    vids.bg.pause();
+  } else {
+    // Best-effort play; browsers may block autoplay, but user action (button) should allow.
+    vids.main.play().catch(() => {});
+    vids.bg.play().catch(() => {});
+  }
+}
+
+function setAllCurrentTime(timeSec) {
+  const t = clamp(timeSec, 0, videoDuration || 0);
+  controlVideo.currentTime = t;
+  updateTimelineMeta();
+  updatePlayhead();
+  syncPreviewToControl(true);
+}
+
+function setAllCurrentTimeSnapped(timeSec) {
+  setAllCurrentTime(snapToFrame(timeSec));
+}
+
+function playAll() {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  controlVideo.play().then(() => {
+    syncPreviewToControl(true);
+    startPreviewSyncLoop();
+  }).catch(() => {
+    // ignore
+  });
+}
+
+function pauseAll() {
+  controlVideo.pause();
+  stopPreviewSyncLoop();
+  syncPreviewToControl(false);
+}
+
+function stepByFrames(frameDelta) {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  pauseAll();
+  const step = frameDelta / FRAME_RATE;
+  setAllCurrentTime((controlVideo.currentTime || 0) + step);
+}
+
+function splitSelectedStateAt(timeSec) {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  const selectedIndex = getStateIndexById(selectedStateId);
+  if (selectedIndex < 0) return;
+
+  const s = states[selectedIndex];
+  const t = clamp(timeSec, s.start + MIN_GAP_SEC, s.end - MIN_GAP_SEC);
+  if (!(t > s.start && t < s.end)) return;
+
+  const left = {
+    ...s,
+    id: nextStateId++,
+    start: s.start,
+    end: t,
+  };
+  const right = {
+    ...s,
+    id: nextStateId++,
+    start: t,
+    end: s.end,
+  };
+
+  states.splice(selectedIndex, 1, left, right);
+  selectedStateId = right.id;
+  renderTimeline();
+  renderStates();
+  updateTimelineMeta();
+}
+
+function selectStateByTime(timeSec) {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return null;
+  const t = clamp(timeSec, 0, videoDuration);
+  for (let i = 0; i < states.length; i++) {
+    const s = states[i];
+    const isLast = i === states.length - 1;
+    if (t >= s.start && (t < s.end || (isLast && t <= s.end))) return s;
+  }
+  return null;
+}
+
+function removeState(id) {
+  if (states.length <= 1) return;
+  const index = getStateIndexById(id);
+  if (index < 0) return;
+
+  if (index === 0) {
+    // Merge into next
+    states[1].start = 0;
+    states.splice(0, 1);
+    selectedStateId = states[0].id;
+  } else {
+    // Merge into previous
+    states[index - 1].end = states[index].end;
+    states.splice(index, 1);
+    selectedStateId = states[Math.min(index - 1, states.length - 1)].id;
+  }
+
+  renderTimeline();
+  renderStates();
+  updateTimelineMeta();
+}
+
+function renderStates() {
+  statesList.innerHTML = "";
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  states.forEach((s, idx) => {
+    const wrap = document.createElement("div");
+    wrap.className = "state" + (s.id === selectedStateId ? " state--selected" : "");
+
+    const title = document.createElement("div");
+    title.className = "state__title";
+
+    const name = document.createElement("div");
+    name.className = "state__name";
+    name.textContent = `State ${idx + 1}`;
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn btn--secondary";
+    delBtn.textContent = "Delete";
+    delBtn.disabled = states.length <= 1;
+    delBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      removeState(s.id);
+    });
+
+    title.addEventListener("click", () => setSelectedState(s.id));
+
+    title.appendChild(name);
+    title.appendChild(delBtn);
+    wrap.appendChild(title);
+
+    const row = document.createElement("div");
+    row.className = "state__row";
+
+    const startField = document.createElement("div");
+    startField.className = "field";
+    const startLabel = document.createElement("label");
+    startLabel.className = "label";
+    startLabel.textContent = "Start time (s)";
+    const startInput = document.createElement("input");
+    startInput.className = "input";
+    startInput.type = "number";
+    startInput.step = "0.01";
+    startInput.value = String(s.start.toFixed(2));
+    startInput.disabled = idx === 0;
+    startInput.addEventListener("focus", () => setSelectedState(s.id));
+    startInput.addEventListener("change", () => {
+      const i = getStateIndexById(s.id);
+      if (i <= 0) return;
+      const prev = states[i - 1];
+      const cur = states[i];
+      const proposed = Number(startInput.value);
+      const nextMin = prev.start + MIN_GAP_SEC;
+      const nextMax = cur.end - MIN_GAP_SEC;
+      const t = clamp(proposed, nextMin, nextMax);
+      prev.end = t;
+      cur.start = t;
+      renderTimeline();
+      renderStates();
+      updateTimelineMeta();
+    });
+    startField.appendChild(startLabel);
+    startField.appendChild(startInput);
+
+    const endField = document.createElement("div");
+    endField.className = "field";
+    const endLabel = document.createElement("label");
+    endLabel.className = "label";
+    endLabel.textContent = "End time (s)";
+    const endInput = document.createElement("input");
+    endInput.className = "input";
+    endInput.type = "number";
+    endInput.step = "0.01";
+    endInput.value = String(s.end.toFixed(2));
+    endInput.disabled = idx === states.length - 1;
+    endInput.addEventListener("focus", () => setSelectedState(s.id));
+    endInput.addEventListener("change", () => {
+      const i = getStateIndexById(s.id);
+      if (i < 0 || i >= states.length - 1) return;
+      const cur = states[i];
+      const next = states[i + 1];
+      const proposed = Number(endInput.value);
+      const nextMin = cur.start + MIN_GAP_SEC;
+      const nextMax = next.end - MIN_GAP_SEC;
+      const t = clamp(proposed, nextMin, nextMax);
+      cur.end = t;
+      next.start = t;
+      renderTimeline();
+      renderStates();
+      updateTimelineMeta();
+    });
+    endField.appendChild(endLabel);
+    endField.appendChild(endInput);
+
+    row.appendChild(startField);
+    row.appendChild(endField);
+    wrap.appendChild(row);
+
+    const checks = document.createElement("div");
+    checks.className = "state__checks";
+
+    const mkCheck = (labelText, checked, onChange) => {
+      const label = document.createElement("label");
+      label.className = "check";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(checked);
+      input.addEventListener("focus", () => setSelectedState(s.id));
+      input.addEventListener("change", () => onChange(input.checked));
+      const txt = document.createElement("span");
+      txt.textContent = labelText;
+      label.appendChild(input);
+      label.appendChild(txt);
+      return label;
+    };
+
+    checks.appendChild(
+      mkCheck("Loop", s.loop, (v) => {
+        const i = getStateIndexById(s.id);
+        if (i < 0) return;
+        states[i].loop = v;
+      })
+    );
+
+    checks.appendChild(
+      mkCheck("Open download on enter", s.openOnEnter, (v) => {
+        const i = getStateIndexById(s.id);
+        if (i < 0) return;
+        states[i].openOnEnter = v;
+      })
+    );
+
+    checks.appendChild(
+      mkCheck("Open download on click", s.openOnClick, (v) => {
+        const i = getStateIndexById(s.id);
+        if (i < 0) return;
+        states[i].openOnClick = v;
+      })
+    );
+
+    wrap.appendChild(checks);
+    frag.appendChild(wrap);
+  });
+
+  statesList.appendChild(frag);
 }
 
 // Drag & drop events
@@ -267,6 +750,125 @@ previewBtn.addEventListener("click", () => {
   }
   setStatus("");
   renderPreview();
+});
+
+// Timeline interaction: click selects a segment; clicking again on selected segment splits it.
+timelineEl.addEventListener("click", (e) => {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) return;
+
+  const time = snapToFrame(getTimelineTimeFromClientX(e.clientX));
+  const hit = selectStateByTime(time);
+  if (!hit) return;
+
+  if (hit.id !== selectedStateId) {
+    setSelectedState(hit.id);
+    return;
+  }
+
+  splitSelectedStateAt(time);
+});
+
+function getTimelineTimeFromClientX(clientX) {
+  const rect = timelineEl.getBoundingClientRect();
+  if (!rect.width) return 0;
+  const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+  return videoDuration * ratio;
+}
+
+function wirePlayheadHandleDrag() {
+  if (!playheadHandleEl) return;
+
+  playheadHandleEl.addEventListener("pointerdown", (e) => {
+    if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    isPlayheadDragging = true;
+    pauseAll();
+    setAllCurrentTimeSnapped(getTimelineTimeFromClientX(e.clientX));
+
+    try {
+      playheadHandleEl.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  });
+
+  playheadHandleEl.addEventListener("pointermove", (e) => {
+    if (!isPlayheadDragging) return;
+    if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setAllCurrentTimeSnapped(getTimelineTimeFromClientX(e.clientX));
+  });
+
+  const stop = (e) => {
+    if (!isPlayheadDragging) return;
+    isPlayheadDragging = false;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  playheadHandleEl.addEventListener("pointerup", stop);
+  playheadHandleEl.addEventListener("pointercancel", stop);
+}
+
+timelineEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  e.preventDefault();
+  // Split at current playhead when using keyboard.
+  splitSelectedStateAt(controlVideo.currentTime || 0);
+});
+
+controlVideo.addEventListener("loadedmetadata", () => {
+  resetStates(controlVideo.duration);
+  updateTimelineMeta();
+  updatePlayhead();
+});
+
+controlVideo.addEventListener("timeupdate", () => {
+  updateTimelineMeta();
+  updatePlayhead();
+  syncPreviewToControl(false);
+});
+
+// Keep timeline meta fresh even if timeupdate doesn't fire (paused).
+controlVideo.addEventListener("seeked", () => {
+  updateTimelineMeta();
+  updatePlayhead();
+  syncPreviewToControl(true);
+});
+
+controlVideo.addEventListener("play", () => {
+  startPreviewSyncLoop();
+});
+
+controlVideo.addEventListener("pause", () => {
+  stopPreviewSyncLoop();
+});
+
+// Preview controls
+playBtn.addEventListener("click", () => {
+  playAll();
+});
+
+pauseBtn.addEventListener("click", () => {
+  pauseAll();
+});
+
+replayBtn.addEventListener("click", () => {
+  setAllCurrentTime(0);
+  playAll();
+});
+
+prevFrameBtn.addEventListener("click", () => {
+  stepByFrames(-1);
+});
+
+nextFrameBtn.addEventListener("click", () => {
+  stepByFrames(1);
 });
 
 // Init

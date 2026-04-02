@@ -13,9 +13,22 @@ html, body {
 }
 
 .container {
-  max-width: 760px;
+  max-width: 1100px;
   margin: 32px auto;
   padding: 0 16px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (max-width: 920px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .h1 {
@@ -91,6 +104,10 @@ html, body {
   margin-top: 12px;
 }
 
+.preview-controls {
+  flex-wrap: wrap;
+}
+
 .btn {
   padding: 10px 14px;
   border-radius: 10px;
@@ -135,4 +152,141 @@ code {
   border-radius: 12px;
   background: #000;
   margin-top: 10px;
+}
+
+.timeline-wrap {
+  margin-top: 12px;
+}
+
+.timeline {
+  position: relative;
+  height: 18px;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+  display: flex;
+  cursor: pointer;
+  user-select: none;
+}
+
+.timeline:focus {
+  outline: none;
+  border-color: #6b7280;
+}
+
+.timeline__seg {
+  height: 100%;
+  background: #d1d5db;
+  border-right: 1px solid #e5e7eb;
+}
+
+.timeline__seg:last-child {
+  border-right: 0;
+}
+
+.timeline__seg--selected {
+  background: #111827;
+}
+
+.timeline__playhead {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: #6b7280;
+  pointer-events: none;
+  transform: translateX(-1px);
+}
+
+.timeline__handle {
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  width: 16px;
+  height: 38px;
+  border-radius: 999px;
+  background: #fff;
+  border: 2px solid #6b7280;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+.timeline__handle:active {
+  cursor: grabbing;
+}
+
+.timeline-meta {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.states {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.state {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fafafa;
+}
+
+.state--selected {
+  border-color: #111827;
+}
+
+.state__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.state__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111;
+}
+
+.state__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.state__checks {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #111;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

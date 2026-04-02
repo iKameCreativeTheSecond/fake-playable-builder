@@ -45,10 +45,33 @@
       </div>
     </section>
 
-    <section class="card">
-      <h2 class="h2">Preview</h2>
-      <div class="muted" id="previewNote">Click Preview after selecting an MP4.</div>
-      <iframe id="previewFrame" class="preview" allow="autoplay" title="Preview"></iframe>
+    <section class="grid">
+      <section class="card">
+        <h2 class="h2">Preview</h2>
+        <div class="muted" id="previewNote">Click Preview after selecting an MP4.</div>
+        <iframe id="previewFrame" class="preview" allow="autoplay" title="Preview"></iframe>
+
+        <div class="actions preview-controls" aria-label="Preview controls">
+          <button id="playBtn" class="btn" type="button" disabled>Play</button>
+          <button id="pauseBtn" class="btn btn--secondary" type="button" disabled>Pause</button>
+          <button id="replayBtn" class="btn btn--secondary" type="button" disabled>Replay</button>
+          <button id="prevFrameBtn" class="btn btn--secondary" type="button" disabled>Prev frame</button>
+          <button id="nextFrameBtn" class="btn btn--secondary" type="button" disabled>Next frame</button>
+        </div>
+
+        <div class="timeline-wrap" aria-label="Timeline">
+          <div id="timeline" class="timeline" role="button" tabindex="0" aria-label="Click to split or select a segment"></div>
+          <div id="timelineMeta" class="muted timeline-meta"></div>
+        </div>
+
+        <video id="controlVideo" class="sr-only" muted playsinline></video>
+      </section>
+
+      <section class="card">
+        <h2 class="h2">States</h2>
+        <div class="muted">Click timeline segments to view/edit the state.</div>
+        <div id="statesList" class="states"></div>
+      </section>
     </section>
   </main>
 

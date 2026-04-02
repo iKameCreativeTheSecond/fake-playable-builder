@@ -109,7 +109,13 @@
             bgVideo.load();
             bgVideo.play();
 
-            handlerLogic();
+            if (!window.__BUILDER_PREVIEW__) {
+                handlerLogic();
+            } else {
+                // In builder preview mode, avoid state-machine loops.
+                video.loop = false;
+                bgVideo.loop = false;
+            }
         }
 
         const frameRate = 30;
@@ -170,6 +176,7 @@
             state_5: 0,
         }
         function eventClick(event) {
+            if (window.__BUILDER_PREVIEW__) return;
             const video = document.getElementById('video');
             const bgVideo = document.getElementById('background-video');
 
