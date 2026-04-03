@@ -1,0 +1,27 @@
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Local env files
+.env
+.env.*
+
+# Dependency folders (if you ever add Node tooling)
+node_modules/
+
+# Build / output folders
+public/
+dist/
+out/
+
+# Optional: local static servers
+.http-server.json
