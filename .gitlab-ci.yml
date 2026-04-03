@@ -1,19 +1,11 @@
-# GitLab Pages configuration for a static site.
-# Publishes the repository root (index.html + assets/ + builder/) to Pages.
-
-stages:
-  - deploy
-
 pages:
   stage: deploy
-  image: alpine:3.20
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
-    - mkdir -p public
-    # Copy site files into ./public (GitLab Pages serves the 'public' artifact)
-    - cp -R index.html builder assets README.md public/
+    - mkdir .public
+    - cp -r * .public
+    - mv .public public
   artifacts:
     paths:
       - public
-    expire_in: 1 week
+  only:
+    - main
