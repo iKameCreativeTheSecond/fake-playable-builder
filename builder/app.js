@@ -58,6 +58,9 @@ let _programmaticSeekResetTimer = 0;
 
 let previewPopup = null;
 
+let autoPreviewRequested = false;
+let autoPreviewInFlight = false;
+
 const stateRuntimeById = new Map();
 
 function getStateRuntime(id) {
@@ -151,7 +154,7 @@ function formatBytes(bytes) {
 function updateUiState() {
   const canExport = Boolean(templateHtml) && Boolean(selectedFile);
   exportBtn.disabled = !canExport;
-  previewBtn.disabled = !canExport;
+  if (previewBtn) previewBtn.disabled = !canExport;
   if (previewPopoutBtn) previewPopoutBtn.disabled = !canExport;
 
   const hasVideoMeta = Boolean(selectedFile) && Number.isFinite(videoDuration) && videoDuration > 0;
@@ -163,6 +166,23 @@ function updateUiState() {
   replayBtn.disabled = !canControlPreview;
   prevFrameBtn.disabled = !canControlPreview;
   nextFrameBtn.disabled = !canControlPreview;
+}
+
+async function maybeAutoRenderIframePreview() {
+  if (!autoPreviewRequested) return;
+  if (autoPreviewInFlight) return;
+  if (!templateHtml || !selectedFile) return;
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  if (!selectedFileObjectUrl) return;
+  if (!states || states.length === 0) return;
+
+  autoPreviewInFlight = true;
+  try {
+    await renderPreview();
+    autoPreviewRequested = false;
+  } finally {
+    autoPreviewInFlight = false;
+  }
 }
 
 function ensurePreviewPopupOpened() {
@@ -288,6 +308,7 @@ async function loadTemplate() {
     console.error(err);
   } finally {
     updateUiState();
+    void maybeAutoRenderIframePreview();
   }
 }
 
@@ -390,7 +411,7 @@ function setSelectedFile(file) {
 
   previewFrame.removeAttribute("srcdoc");
   previewFrame.removeAttribute("src");
-  previewNote.textContent = file ? "Ready to preview." : "Click Preview after selecting an MP4.";
+  previewNote.textContent = file ? "Loading preview..." : "Select an MP4 to preview.";
 
   if (!file) {
     fileMeta.textContent = "No file selected";
@@ -403,6 +424,9 @@ function setSelectedFile(file) {
   selectedFileObjectUrl = URL.createObjectURL(file);
   controlVideo.src = selectedFileObjectUrl;
   controlVideo.load();
+
+  // Auto-render preview once metadata is loaded and states are initialized.
+  autoPreviewRequested = true;
 
   const name = file.name || "(unnamed)";
   const size = formatBytes(file.size);
@@ -1639,18 +1663,20 @@ exportBtn.addEventListener("click", async () => {
 });
 
 // Preview
-previewBtn.addEventListener("click", async () => {
-  if (!templateHtml) {
-    setStatus("Template not loaded.");
-    return;
-  }
-  if (!selectedFile) {
-    setStatus("Choose an MP4 first.");
-    return;
-  }
-  setStatus("");
-  await renderPreview();
-});
+if (previewBtn) {
+  previewBtn.addEventListener("click", async () => {
+    if (!templateHtml) {
+      setStatus("Template not loaded.");
+      return;
+    }
+    if (!selectedFile) {
+      setStatus("Choose an MP4 first.");
+      return;
+    }
+    setStatus("");
+    await renderPreview();
+  });
+}
 
 if (previewPopoutBtn) {
   previewPopoutBtn.addEventListener("click", async () => {
@@ -1744,6 +1770,7 @@ controlVideo.addEventListener("loadedmetadata", () => {
   resetStates(controlVideo.duration);
   updateTimelineMeta();
   updatePlayhead();
+  void maybeAutoRenderIframePreview();
 });
 
 controlVideo.addEventListener("timeupdate", () => {

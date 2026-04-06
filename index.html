@@ -36,8 +36,6 @@
       </div>
 
       <div class="actions">
-        <button id="exportBtn" class="btn" type="button" disabled>Export single HTML</button>
-        <button id="previewBtn" class="btn btn--secondary" type="button" disabled>Preview</button>
         <div id="status" class="status muted"></div>
       </div>
 
@@ -49,7 +47,7 @@
     <section class="grid">
       <section class="card">
         <h2 class="h2">Preview</h2>
-        <div class="muted" id="previewNote">Click Preview after selecting an MP4.</div>
+        <div class="muted" id="previewNote">Preview updates automatically after selecting an MP4.</div>
         <div id="runtimeStatus" class="runtime-status" aria-live="polite"></div>
         <iframe id="previewFrame" class="preview" allow="autoplay" title="Preview"></iframe>
 
@@ -66,7 +64,8 @@
           <div id="timelineMeta" class="muted timeline-meta"></div>
         </div>
 
-        <div class="actions" aria-label="Popout preview">
+        <div class="actions" aria-label="Export and popout preview">
+          <button id="exportBtn" class="btn" type="button" disabled>Export single HTML</button>
           <button id="previewPopoutBtn" class="btn btn--secondary" type="button" disabled>Preview (New window)</button>
         </div>
 
