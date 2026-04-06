@@ -21,6 +21,10 @@ const statesList = document.getElementById("statesList");
 const runtimeStatusEl = document.getElementById("runtimeStatus");
 const toastEl = document.getElementById("toast");
 
+const statePrevBtn = document.getElementById("statePrevBtn");
+const stateNextBtn = document.getElementById("stateNextBtn");
+const stateCounter = document.getElementById("stateCounter");
+
 const playBtn = document.getElementById("playBtn");
 const pauseBtn = document.getElementById("pauseBtn");
 const replayBtn = document.getElementById("replayBtn");
@@ -157,6 +161,10 @@ function updateUiState() {
   if (previewBtn) previewBtn.disabled = !canExport;
   if (previewPopoutBtn) previewPopoutBtn.disabled = !canExport;
 
+  const canNavigateStates = Boolean(selectedFile) && Number.isFinite(videoDuration) && videoDuration > 0 && states.length > 0;
+  if (statePrevBtn) statePrevBtn.disabled = !canNavigateStates;
+  if (stateNextBtn) stateNextBtn.disabled = !canNavigateStates;
+
   const hasVideoMeta = Boolean(selectedFile) && Number.isFinite(videoDuration) && videoDuration > 0;
   timelineEl.setAttribute("aria-disabled", String(!hasVideoMeta));
 
@@ -166,6 +174,30 @@ function updateUiState() {
   replayBtn.disabled = !canControlPreview;
   prevFrameBtn.disabled = !canControlPreview;
   nextFrameBtn.disabled = !canControlPreview;
+}
+
+function updateStateNavButtons() {
+  if (!statePrevBtn && !stateNextBtn) return;
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
+    if (statePrevBtn) statePrevBtn.disabled = true;
+    if (stateNextBtn) stateNextBtn.disabled = true;
+    return;
+  }
+  const idx = getStateIndexById(selectedStateId);
+  const i = idx >= 0 ? idx : 0;
+  if (statePrevBtn) statePrevBtn.disabled = i <= 0;
+  if (stateNextBtn) stateNextBtn.disabled = i >= states.length - 1;
+}
+
+function updateStateCounter() {
+  if (!stateCounter) return;
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
+    stateCounter.textContent = "";
+    return;
+  }
+  const idx = getStateIndexById(selectedStateId);
+  const i = idx >= 0 ? idx : 0;
+  stateCounter.textContent = `State ${i + 1} / ${states.length}`;
 }
 
 async function maybeAutoRenderIframePreview() {
@@ -568,16 +600,11 @@ function getStateById(id) {
 }
 
 function setSelectedState(id) {
-  if (selectedStateId !== null) {
-    const old = stateElements.get(selectedStateId);
-    if (old) old.classList.remove("state--selected");
-  }
   selectedStateId = id;
-  if (id !== null) {
-    const el = stateElements.get(id);
-    if (el) el.classList.add("state--selected");
-  }
   renderTimeline();
+  renderStates();
+  updateStateNavButtons();
+  updateStateCounter();
 }
 
 function resetStates(durationSec) {
@@ -610,6 +637,7 @@ function resetStates(durationSec) {
   selectedStateId = first.id;
   renderTimeline();
   renderStates();
+  updateStateCounter();
   updateUiState();
 }
 
@@ -1090,6 +1118,7 @@ function removeState(id) {
   renderTimeline();
   renderStates();
   updateTimelineMeta();
+  updateStateCounter();
 }
 
 function renderStates() {
@@ -1099,317 +1128,321 @@ function renderStates() {
     return;
   }
 
+  // Render only the selected state.
+  let idx = getStateIndexById(selectedStateId);
+  if (idx < 0) idx = 0;
+  const s = states[idx];
+  if (!s) return;
+
   const frag = document.createDocumentFragment();
-  states.forEach((s, idx) => {
-    const wrap = document.createElement("div");
-    wrap.className = "state" + (s.id === selectedStateId ? " state--selected" : "");
-    stateElements.set(s.id, wrap);
+  const wrap = document.createElement("div");
+  wrap.className = "state state--selected";
+  stateElements.set(s.id, wrap);
 
-    // Selecting a state card only toggles CSS (no DOM rebuild).
-    wrap.addEventListener("pointerdown", () => setSelectedState(s.id));
+  const title = document.createElement("div");
+  title.className = "state__title";
 
-    const title = document.createElement("div");
-    title.className = "state__title";
+  const name = document.createElement("div");
+  name.className = "state__name";
+  name.textContent = `State ${idx + 1}`;
 
-    const name = document.createElement("div");
-    name.className = "state__name";
-    name.textContent = `State ${idx + 1}`;
-
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "btn btn--secondary";
-    delBtn.textContent = "Delete";
-    delBtn.disabled = states.length <= 1;
-    delBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      removeState(s.id);
-    });
-
-    title.addEventListener("click", () => setSelectedState(s.id));
-
-    title.appendChild(name);
-    title.appendChild(delBtn);
-    wrap.appendChild(title);
-
-    const row = document.createElement("div");
-    row.className = "state__row";
-
-    const startField = document.createElement("div");
-    startField.className = "field";
-    const startLabel = document.createElement("label");
-    startLabel.className = "label";
-    startLabel.textContent = "Start time (s)";
-    const startInput = document.createElement("input");
-    startInput.className = "input";
-    startInput.type = "number";
-    startInput.step = "0.01";
-    startInput.value = String(s.start.toFixed(2));
-    startInput.disabled = idx === 0;
-    startInput.addEventListener("change", () => {
-      const i = getStateIndexById(s.id);
-      if (i <= 0) return;
-      const prev = states[i - 1];
-      const cur = states[i];
-      const proposed = Number(startInput.value);
-      const nextMin = prev.start + MIN_GAP_SEC;
-      const nextMax = cur.end - MIN_GAP_SEC;
-      const t = clamp(proposed, nextMin, nextMax);
-      prev.end = t;
-      cur.start = t;
-      renderTimeline();
-      renderStates();
-      updateTimelineMeta();
-    });
-    startField.appendChild(startLabel);
-    startField.appendChild(startInput);
-
-    const endField = document.createElement("div");
-    endField.className = "field";
-    const endLabel = document.createElement("label");
-    endLabel.className = "label";
-    endLabel.textContent = "End time (s)";
-    const endInput = document.createElement("input");
-    endInput.className = "input";
-    endInput.type = "number";
-    endInput.step = "0.01";
-    endInput.value = String(s.end.toFixed(2));
-    endInput.disabled = idx === states.length - 1;
-    endInput.addEventListener("change", () => {
-      const i = getStateIndexById(s.id);
-      if (i < 0 || i >= states.length - 1) return;
-      const cur = states[i];
-      const next = states[i + 1];
-      const proposed = Number(endInput.value);
-      const nextMin = cur.start + MIN_GAP_SEC;
-      const nextMax = next.end - MIN_GAP_SEC;
-      const t = clamp(proposed, nextMin, nextMax);
-      cur.end = t;
-      next.start = t;
-      renderTimeline();
-      renderStates();
-      updateTimelineMeta();
-    });
-    endField.appendChild(endLabel);
-    endField.appendChild(endInput);
-
-    row.appendChild(startField);
-    row.appendChild(endField);
-    wrap.appendChild(row);
-
-    const checks = document.createElement("div");
-    checks.className = "state__checks";
-
-    const mkCheck = (labelText, checked, onChange) => {
-      const label = document.createElement("label");
-      label.className = "check";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = Boolean(checked);
-      input.addEventListener("change", () => onChange(input.checked));
-      const txt = document.createElement("span");
-      txt.textContent = labelText;
-      label.appendChild(input);
-      label.appendChild(txt);
-      return label;
-    };
-
-    checks.appendChild(
-      mkCheck("Loop", s.loop, (v) => {
-        const i = getStateIndexById(s.id);
-        if (i < 0) return;
-        states[i].loop = v;
-      })
-    );
-
-    checks.appendChild(
-      mkCheck("Exit on click", s.exitOnClick, (v) => {
-        const i = getStateIndexById(s.id);
-        if (i < 0) return;
-        states[i].exitOnClick = v;
-      })
-    );
-
-    checks.appendChild(
-      mkCheck("Open download on enter", s.openOnEnter, (v) => {
-        const i = getStateIndexById(s.id);
-        if (i < 0) return;
-        states[i].openOnEnter = v;
-      })
-    );
-
-    checks.appendChild(
-      mkCheck("Open download on click", s.openOnClick, (v) => {
-        const i = getStateIndexById(s.id);
-        if (i < 0) return;
-        states[i].openOnClick = v;
-      })
-    );
-
-    wrap.appendChild(checks);
-
-    // Cursor controls (hidden unless cursorOn is enabled)
-    const cursorConfig = document.createElement("div");
-    cursorConfig.className = "cursor-config";
-
-    const cursorCheckLabel = document.createElement("label");
-    cursorCheckLabel.className = "check";
-    const cursorCheckInput = document.createElement("input");
-    cursorCheckInput.type = "checkbox";
-    cursorCheckInput.checked = Boolean(s.cursorOn);
-    const cursorCheckText = document.createElement("span");
-    cursorCheckText.textContent = "Cursor (GIF)";
-    cursorCheckLabel.appendChild(cursorCheckInput);
-    cursorCheckLabel.appendChild(cursorCheckText);
-    checks.appendChild(cursorCheckLabel);
-
-    const nudge = document.createElement("div");
-    nudge.className = "cursor-nudge";
-
-    const mkNudgeBtn = (text, title, onClick) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "btn btn--secondary btn--tiny";
-      b.textContent = text;
-      b.title = title;
-      b.addEventListener("click", (e) => {
-        e.preventDefault();
-        onClick();
-      });
-      return b;
-    };
-
-    const cursorRow = document.createElement("div");
-    cursorRow.className = "state__row";
-
-    const xField = document.createElement("div");
-    xField.className = "field";
-    const xLabel = document.createElement("label");
-    xLabel.className = "label";
-    xLabel.textContent = "Cursor X (% of video)";
-    const xInput = document.createElement("input");
-    xInput.className = "input";
-    xInput.type = "number";
-    xInput.step = "1";
-    xInput.min = "0";
-    xInput.max = "100";
-    const xVal = Number(s.cursorX);
-    xInput.value = String(Number.isFinite(xVal) ? clamp(xVal, 0, 100) : 50);
-    xInput.addEventListener("change", () => {
-      const i = getStateIndexById(s.id);
-      if (i < 0) return;
-      const proposed = Number(xInput.value);
-      const nextVal = Number.isFinite(proposed) ? clamp(proposed, 0, 100) : 50;
-      states[i].cursorX = nextVal;
-      xInput.value = String(nextVal);
-      runPreviewStateMachine();
-    });
-    xField.appendChild(xLabel);
-    xField.appendChild(xInput);
-
-    const yField = document.createElement("div");
-    yField.className = "field";
-    const yLabel = document.createElement("label");
-    yLabel.className = "label";
-    yLabel.textContent = "Cursor Y (% of video)";
-    const yInput = document.createElement("input");
-    yInput.className = "input";
-    yInput.type = "number";
-    yInput.step = "1";
-    yInput.min = "0";
-    yInput.max = "100";
-    const yVal = Number(s.cursorY);
-    yInput.value = String(Number.isFinite(yVal) ? clamp(yVal, 0, 100) : 50);
-    yInput.addEventListener("change", () => {
-      const i = getStateIndexById(s.id);
-      if (i < 0) return;
-      const proposed = Number(yInput.value);
-      const nextVal = Number.isFinite(proposed) ? clamp(proposed, 0, 100) : 50;
-      states[i].cursorY = nextVal;
-      yInput.value = String(nextVal);
-      runPreviewStateMachine();
-    });
-    yField.appendChild(yLabel);
-    yField.appendChild(yInput);
-
-    cursorRow.appendChild(xField);
-    cursorRow.appendChild(yField);
-
-    const scaleField = document.createElement("div");
-    scaleField.className = "field";
-    const scaleLabel = document.createElement("label");
-    scaleLabel.className = "label";
-    scaleLabel.textContent = "Cursor scale (%)";
-    const scaleInput = document.createElement("input");
-    scaleInput.className = "input";
-    scaleInput.type = "number";
-    scaleInput.step = "5";
-    scaleInput.min = "10";
-    scaleInput.max = "300";
-    const scaleVal = Number(s.cursorScale);
-    scaleInput.value = String(Number.isFinite(scaleVal) ? clamp(scaleVal, 10, 300) : 100);
-    scaleInput.addEventListener("change", () => {
-      const i = getStateIndexById(s.id);
-      if (i < 0) return;
-      const proposed = Number(scaleInput.value);
-      const nextVal = Number.isFinite(proposed) ? clamp(proposed, 10, 300) : 100;
-      states[i].cursorScale = nextVal;
-      scaleInput.value = String(nextVal);
-      runPreviewStateMachine();
-    });
-    scaleField.appendChild(scaleLabel);
-    scaleField.appendChild(scaleInput);
-
-    const nudgeBy = (dx, dy) => {
-      const i = getStateIndexById(s.id);
-      if (i < 0) return;
-      const curX = Number(states[i].cursorX);
-      const curY = Number(states[i].cursorY);
-      const x = clamp((Number.isFinite(curX) ? curX : 50) + dx, 0, 100);
-      const y = clamp((Number.isFinite(curY) ? curY : 50) + dy, 0, 100);
-      states[i].cursorX = x;
-      states[i].cursorY = y;
-      xInput.value = String(Math.round(x));
-      yInput.value = String(Math.round(y));
-      runPreviewStateMachine();
-    };
-
-    // Horizontal row (above scale field)
-    nudge.appendChild(mkNudgeBtn("←", "Move left (1% of video)", () => nudgeBy(-1, 0)));
-    nudge.appendChild(mkNudgeBtn("↑", "Move up (1% of video)", () => nudgeBy(0, -1)));
-    nudge.appendChild(mkNudgeBtn("↓", "Move down (1% of video)", () => nudgeBy(0, 1)));
-    nudge.appendChild(mkNudgeBtn("→", "Move right (1% of video)", () => nudgeBy(1, 0)));
-
-    cursorConfig.appendChild(scaleField);
-    cursorConfig.appendChild(cursorRow);
-    cursorConfig.appendChild(nudge);
-    wrap.appendChild(cursorConfig);
-
-    const setCursorConfigVisible = (visible) => {
-      cursorConfig.style.display = visible ? "" : "none";
-    };
-    setCursorConfigVisible(Boolean(s.cursorOn));
-
-    cursorCheckInput.addEventListener("change", () => {
-      const i = getStateIndexById(s.id);
-      if (i < 0) return;
-      const v = Boolean(cursorCheckInput.checked);
-      states[i].cursorOn = v;
-      setCursorConfigVisible(v);
-
-      if (v) {
-        // If preview was rendered before cursor was enabled, inject it now.
-        void ensurePreviewCursorInjectedAll().then(() => {
-          runPreviewStateMachine();
-        });
-      } else {
-        runPreviewStateMachine();
-      }
-    });
-
-    frag.appendChild(wrap);
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "btn btn--secondary";
+  delBtn.textContent = "Delete";
+  delBtn.disabled = states.length <= 1;
+  delBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    removeState(s.id);
+    updateStateNavButtons();
   });
 
+  title.appendChild(name);
+  title.appendChild(delBtn);
+  wrap.appendChild(title);
+
+  const row = document.createElement("div");
+  row.className = "state__row";
+
+  const startField = document.createElement("div");
+  startField.className = "field";
+  const startLabel = document.createElement("label");
+  startLabel.className = "label";
+  startLabel.textContent = "Start time (s)";
+  const startInput = document.createElement("input");
+  startInput.className = "input";
+  startInput.type = "number";
+  startInput.step = "0.01";
+  startInput.value = String(s.start.toFixed(2));
+  startInput.disabled = idx === 0;
+  startInput.addEventListener("change", () => {
+    const i = getStateIndexById(s.id);
+    if (i <= 0) return;
+    const prev = states[i - 1];
+    const cur = states[i];
+    const proposed = Number(startInput.value);
+    const nextMin = prev.start + MIN_GAP_SEC;
+    const nextMax = cur.end - MIN_GAP_SEC;
+    const t = clamp(proposed, nextMin, nextMax);
+    prev.end = t;
+    cur.start = t;
+    renderTimeline();
+    renderStates();
+    updateTimelineMeta();
+    updateStateNavButtons();
+  });
+  startField.appendChild(startLabel);
+  startField.appendChild(startInput);
+
+  const endField = document.createElement("div");
+  endField.className = "field";
+  const endLabel = document.createElement("label");
+  endLabel.className = "label";
+  endLabel.textContent = "End time (s)";
+  const endInput = document.createElement("input");
+  endInput.className = "input";
+  endInput.type = "number";
+  endInput.step = "0.01";
+  endInput.value = String(s.end.toFixed(2));
+  endInput.disabled = idx === states.length - 1;
+  endInput.addEventListener("change", () => {
+    const i = getStateIndexById(s.id);
+    if (i < 0 || i >= states.length - 1) return;
+    const cur = states[i];
+    const next = states[i + 1];
+    const proposed = Number(endInput.value);
+    const nextMin = cur.start + MIN_GAP_SEC;
+    const nextMax = next.end - MIN_GAP_SEC;
+    const t = clamp(proposed, nextMin, nextMax);
+    cur.end = t;
+    next.start = t;
+    renderTimeline();
+    renderStates();
+    updateTimelineMeta();
+    updateStateNavButtons();
+  });
+  endField.appendChild(endLabel);
+  endField.appendChild(endInput);
+
+  row.appendChild(startField);
+  row.appendChild(endField);
+  wrap.appendChild(row);
+
+  const checks = document.createElement("div");
+  checks.className = "state__checks";
+
+  const mkCheck = (labelText, checked, onChange) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(checked);
+    input.addEventListener("change", () => onChange(input.checked));
+    const txt = document.createElement("span");
+    txt.textContent = labelText;
+    label.appendChild(input);
+    label.appendChild(txt);
+    return label;
+  };
+
+  checks.appendChild(
+    mkCheck("Loop", s.loop, (v) => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      states[i].loop = v;
+    })
+  );
+
+  checks.appendChild(
+    mkCheck("Exit on click", s.exitOnClick, (v) => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      states[i].exitOnClick = v;
+    })
+  );
+
+  checks.appendChild(
+    mkCheck("Open download on enter", s.openOnEnter, (v) => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      states[i].openOnEnter = v;
+    })
+  );
+
+  checks.appendChild(
+    mkCheck("Open download on click", s.openOnClick, (v) => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      states[i].openOnClick = v;
+    })
+  );
+
+  wrap.appendChild(checks);
+
+  // Cursor controls (hidden unless cursorOn is enabled)
+  const cursorConfig = document.createElement("div");
+  cursorConfig.className = "cursor-config";
+
+  const cursorCheckLabel = document.createElement("label");
+  cursorCheckLabel.className = "check";
+  const cursorCheckInput = document.createElement("input");
+  cursorCheckInput.type = "checkbox";
+  cursorCheckInput.checked = Boolean(s.cursorOn);
+  const cursorCheckText = document.createElement("span");
+  cursorCheckText.textContent = "Cursor (GIF)";
+  cursorCheckLabel.appendChild(cursorCheckInput);
+  cursorCheckLabel.appendChild(cursorCheckText);
+  checks.appendChild(cursorCheckLabel);
+
+  const nudge = document.createElement("div");
+  nudge.className = "cursor-nudge";
+
+  const mkNudgeBtn = (text, title, onClick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn--secondary btn--tiny";
+    b.textContent = text;
+    b.title = title;
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      onClick();
+    });
+    return b;
+  };
+
+  const cursorRow = document.createElement("div");
+  cursorRow.className = "state__row";
+
+  const xField = document.createElement("div");
+  xField.className = "field";
+  const xLabel = document.createElement("label");
+  xLabel.className = "label";
+  xLabel.textContent = "Cursor X (% of video)";
+  const xInput = document.createElement("input");
+  xInput.className = "input";
+  xInput.type = "number";
+  xInput.step = "1";
+  xInput.min = "0";
+  xInput.max = "100";
+  const xVal = Number(s.cursorX);
+  xInput.value = String(Number.isFinite(xVal) ? clamp(xVal, 0, 100) : 50);
+  xInput.addEventListener("change", () => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    const proposed = Number(xInput.value);
+    const nextVal = Number.isFinite(proposed) ? clamp(proposed, 0, 100) : 50;
+    states[i].cursorX = nextVal;
+    xInput.value = String(nextVal);
+    runPreviewStateMachine();
+  });
+  xField.appendChild(xLabel);
+  xField.appendChild(xInput);
+
+  const yField = document.createElement("div");
+  yField.className = "field";
+  const yLabel = document.createElement("label");
+  yLabel.className = "label";
+  yLabel.textContent = "Cursor Y (% of video)";
+  const yInput = document.createElement("input");
+  yInput.className = "input";
+  yInput.type = "number";
+  yInput.step = "1";
+  yInput.min = "0";
+  yInput.max = "100";
+  const yVal = Number(s.cursorY);
+  yInput.value = String(Number.isFinite(yVal) ? clamp(yVal, 0, 100) : 50);
+  yInput.addEventListener("change", () => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    const proposed = Number(yInput.value);
+    const nextVal = Number.isFinite(proposed) ? clamp(proposed, 0, 100) : 50;
+    states[i].cursorY = nextVal;
+    yInput.value = String(nextVal);
+    runPreviewStateMachine();
+  });
+  yField.appendChild(yLabel);
+  yField.appendChild(yInput);
+
+  cursorRow.appendChild(xField);
+  cursorRow.appendChild(yField);
+
+  const scaleField = document.createElement("div");
+  scaleField.className = "field";
+  const scaleLabel = document.createElement("label");
+  scaleLabel.className = "label";
+  scaleLabel.textContent = "Cursor scale (%)";
+  const scaleInput = document.createElement("input");
+  scaleInput.className = "input";
+  scaleInput.type = "number";
+  scaleInput.step = "5";
+  scaleInput.min = "10";
+  scaleInput.max = "300";
+  const scaleVal = Number(s.cursorScale);
+  scaleInput.value = String(Number.isFinite(scaleVal) ? clamp(scaleVal, 10, 300) : 100);
+  scaleInput.addEventListener("change", () => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    const proposed = Number(scaleInput.value);
+    const nextVal = Number.isFinite(proposed) ? clamp(proposed, 10, 300) : 100;
+    states[i].cursorScale = nextVal;
+    scaleInput.value = String(nextVal);
+    runPreviewStateMachine();
+  });
+  scaleField.appendChild(scaleLabel);
+  scaleField.appendChild(scaleInput);
+
+  const nudgeBy = (dx, dy) => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    const curX = Number(states[i].cursorX);
+    const curY = Number(states[i].cursorY);
+    const x = clamp((Number.isFinite(curX) ? curX : 50) + dx, 0, 100);
+    const y = clamp((Number.isFinite(curY) ? curY : 50) + dy, 0, 100);
+    states[i].cursorX = x;
+    states[i].cursorY = y;
+    xInput.value = String(Math.round(x));
+    yInput.value = String(Math.round(y));
+    runPreviewStateMachine();
+  };
+
+  // Horizontal row (above scale field)
+  nudge.appendChild(mkNudgeBtn("←", "Move left (1% of video)", () => nudgeBy(-1, 0)));
+  nudge.appendChild(mkNudgeBtn("↑", "Move up (1% of video)", () => nudgeBy(0, -1)));
+  nudge.appendChild(mkNudgeBtn("↓", "Move down (1% of video)", () => nudgeBy(0, 1)));
+  nudge.appendChild(mkNudgeBtn("→", "Move right (1% of video)", () => nudgeBy(1, 0)));
+
+  cursorConfig.appendChild(scaleField);
+  cursorConfig.appendChild(cursorRow);
+  cursorConfig.appendChild(nudge);
+  wrap.appendChild(cursorConfig);
+
+  const setCursorConfigVisible = (visible) => {
+    cursorConfig.style.display = visible ? "" : "none";
+  };
+  setCursorConfigVisible(Boolean(s.cursorOn));
+
+  cursorCheckInput.addEventListener("change", () => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    const v = Boolean(cursorCheckInput.checked);
+    states[i].cursorOn = v;
+    setCursorConfigVisible(v);
+
+    if (v) {
+      // If preview was rendered before cursor was enabled, inject it now.
+      void ensurePreviewCursorInjectedAll().then(() => {
+        runPreviewStateMachine();
+      });
+    } else {
+      runPreviewStateMachine();
+    }
+  });
+
+  frag.appendChild(wrap);
+
   statesList.appendChild(frag);
+  updateStateNavButtons();
+  updateStateCounter();
 }
 
 // Drag & drop events
@@ -1692,6 +1725,28 @@ if (previewPopoutBtn) {
     // Must run on user gesture to avoid popup blockers.
     setStatus("");
     await renderPopoutFinalPreview();
+  });
+}
+
+if (statePrevBtn) {
+  statePrevBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const idx = getStateIndexById(selectedStateId);
+    const i = idx >= 0 ? idx : 0;
+    if (i <= 0) return;
+    setSelectedState(states[i - 1].id);
+    updateTimelineMeta();
+  });
+}
+
+if (stateNextBtn) {
+  stateNextBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const idx = getStateIndexById(selectedStateId);
+    const i = idx >= 0 ? idx : 0;
+    if (i >= states.length - 1) return;
+    setSelectedState(states[i + 1].id);
+    updateTimelineMeta();
   });
 }
 

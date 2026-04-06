@@ -65,7 +65,7 @@
         </div>
 
         <div class="actions" aria-label="Export and popout preview">
-          <button id="exportBtn" class="btn" type="button" disabled>Export single HTML</button>
+          <button id="exportBtn" class="btn" type="button" disabled>Export Playable</button>
           <button id="previewPopoutBtn" class="btn btn--secondary" type="button" disabled>Preview (New window)</button>
         </div>
 
@@ -74,6 +74,11 @@
 
       <section class="card">
         <h2 class="h2">States</h2>
+        <div class="actions" aria-label="State navigation">
+          <button id="statePrevBtn" class="btn btn--secondary" type="button" disabled>Previous</button>
+          <button id="stateNextBtn" class="btn btn--secondary" type="button" disabled>Next</button>
+          <div id="stateCounter" class="muted" aria-live="polite"></div>
+        </div>
         <div class="muted">Click timeline segments to view/edit the state.</div>
         <div id="statesList" class="states"></div>
       </section>
