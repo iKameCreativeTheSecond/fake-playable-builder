@@ -10,6 +10,7 @@ const fileInput = document.getElementById("fileInput");
 const fileMeta = document.getElementById("fileMeta");
 const exportBtn = document.getElementById("exportBtn");
 const previewBtn = document.getElementById("previewBtn");
+const previewPopoutBtn = document.getElementById("previewPopoutBtn");
 const statusEl = document.getElementById("status");
 const previewNote = document.getElementById("previewNote");
 const previewFrame = document.getElementById("previewFrame");
@@ -54,6 +55,8 @@ let toastTimer = 0;
 let wantPlaying = false;
 let isProgrammaticSeek = false;
 let _programmaticSeekResetTimer = 0;
+
+let previewPopup = null;
 
 const stateRuntimeById = new Map();
 
@@ -149,6 +152,7 @@ function updateUiState() {
   const canExport = Boolean(templateHtml) && Boolean(selectedFile);
   exportBtn.disabled = !canExport;
   previewBtn.disabled = !canExport;
+  if (previewPopoutBtn) previewPopoutBtn.disabled = !canExport;
 
   const hasVideoMeta = Boolean(selectedFile) && Number.isFinite(videoDuration) && videoDuration > 0;
   timelineEl.setAttribute("aria-disabled", String(!hasVideoMeta));
@@ -159,6 +163,113 @@ function updateUiState() {
   replayBtn.disabled = !canControlPreview;
   prevFrameBtn.disabled = !canControlPreview;
   nextFrameBtn.disabled = !canControlPreview;
+}
+
+function ensurePreviewPopupOpened() {
+  if (previewPopup && !previewPopup.closed) return previewPopup;
+  try {
+    previewPopup = window.open("about:blank", "_blank");
+    if (previewPopup) {
+      try { previewPopup.focus(); } catch { /* ignore */ }
+    }
+  } catch {
+    previewPopup = null;
+  }
+  return previewPopup;
+}
+
+function getIframeDocument() {
+  try {
+    return previewFrame.contentDocument;
+  } catch {
+    return null;
+  }
+}
+
+function getPopupDocument() {
+  try {
+    if (previewPopup && !previewPopup.closed) return previewPopup.document;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function getPreviewDocuments() {
+  const docs = [];
+  const iframeDoc = getIframeDocument();
+  if (iframeDoc) docs.push({ kind: "iframe", doc: iframeDoc });
+  return docs;
+}
+
+function wirePreviewOverlayAndSync(doc) {
+  // Attach overlay click listener (for openOnClick/exitOnClick simulation).
+  try {
+    if (doc) {
+      const overlay = doc.getElementById("overlay");
+      if (overlay) {
+        // Avoid stacking listeners across reloads.
+        if (overlay.__builderPreviewClickHandler) {
+          try { overlay.removeEventListener("click", overlay.__builderPreviewClickHandler); } catch { /* ignore */ }
+        }
+
+        const handler = () => {
+          const cur = selectStateByTimeBiased(controlVideo.currentTime || 0, lastPreviewStateId);
+          if (!cur) return;
+
+          const curIdx = getStateIndexById(cur.id);
+
+          if (cur.exitOnClick && states[curIdx + 1]) {
+            const rt = getStateRuntime(cur.id);
+            if (rt) rt.unlocked = true;
+            setAllCurrentTimeKeepingPlay(cur.end);
+            return;
+          }
+
+          if (cur.loop) {
+            const next = states[curIdx + 1];
+            if (next) {
+              const rt = getStateRuntime(cur.id);
+              if (rt) rt.unlocked = true;
+              updateRuntimeStatus();
+              showToast(`Will continue to State ${curIdx + 2} at ${formatTime(cur.end)}.`);
+            }
+          }
+
+          if (cur.openOnClick) previewTriggerDownload("Open download on click");
+        };
+
+        overlay.__builderPreviewClickHandler = handler;
+        overlay.addEventListener("click", handler);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // Wait for preview video to finish its own .load() call before seeking.
+  const trySync = (attemptsLeft) => {
+    const vids = getPreviewVideos(doc);
+    if (!vids) {
+      if (attemptsLeft > 0) setTimeout(() => trySync(attemptsLeft - 1), 80);
+      return;
+    }
+
+    // If any state uses the cursor, make sure this preview doc has it injected.
+    if (states.some((s) => s && s.cursorOn)) {
+      void ensurePreviewCursorInjected(doc).then(() => {
+        runPreviewStateMachine();
+      });
+    }
+
+    syncPreviewToControl(true);
+    runPreviewStateMachine();
+    if (previewWasPlaying) {
+      previewWasPlaying = false;
+      playAll();
+    }
+  };
+  setTimeout(() => trySync(5), 100);
 }
 
 async function loadTemplate() {
@@ -345,9 +456,61 @@ async function renderPreview() {
   previewWasPlaying = !controlVideo.paused;
   if (previewWasPlaying) pauseAll();
 
-  // srcdoc avoids extra file creation and refreshes instantly.
+  // Always refresh iframe preview.
   previewFrame.srcdoc = previewOut;
   previewNote.textContent = "Preview updated. Thay đổi state (loop, flags, timing) có hiệu lực ngay — không cần bấm Preview lại.";
+}
+
+async function renderPopoutFinalPreview() {
+  if (!templateHtml || !selectedFile) return;
+
+  const title = titleInput.value.trim() || "Playable";
+  const clickUrl = clickUrlInput.value.trim() || "";
+  const cursorWanted = states.some((s) => Boolean(s && s.cursorOn));
+
+  if (!selectedFileObjectUrl) return;
+
+  let cursorDataUrl = "";
+  if (cursorWanted) {
+    try {
+      setStatus("Loading cursor GIF...");
+      cursorDataUrl = await ensureCursorGifDataUrl();
+    } catch (err) {
+      setStatus("Failed to load cursor GIF (export/preview may miss cursor). See console.");
+      // eslint-disable-next-line no-console
+      console.error(err);
+      cursorDataUrl = "";
+    } finally {
+      if (statusEl.textContent.startsWith("Loading cursor GIF")) setStatus("");
+    }
+  }
+
+  const out = applyInputsToTemplate(templateHtml, {
+    title,
+    videoDataUrl: selectedFileObjectUrl,
+    clickUrl,
+  });
+  const finalOut = applyStatesToTemplate(out, states, clickUrl, cursorDataUrl);
+
+  const w = ensurePreviewPopupOpened();
+  if (!w) {
+    setStatus("Popup blocked. Please allow popups for this page.");
+    return;
+  }
+  try { w.focus(); } catch { /* ignore */ }
+
+  // IMPORTANT: No __BUILDER_PREVIEW__ flag here.
+  // This makes the popup behave like the exported HTML (runs handlerLogic).
+  try {
+    w.document.open();
+    w.document.write(finalOut);
+    w.document.close();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(err);
+  }
+
+  previewNote.textContent = "New window preview opened (export-like, independent). It does NOT sync time with the iframe preview.";
 }
 
 function clamp(value, min, max) {
@@ -426,9 +589,8 @@ function resetStates(durationSec) {
   updateUiState();
 }
 
-function getPreviewCursorEl() {
+function getPreviewCursorEl(doc) {
   try {
-    const doc = previewFrame.contentDocument;
     if (!doc) return null;
     return doc.getElementById("builderCursor");
   } catch {
@@ -436,9 +598,8 @@ function getPreviewCursorEl() {
   }
 }
 
-async function ensurePreviewCursorInjected() {
+async function ensurePreviewCursorInjected(doc) {
   try {
-    const doc = previewFrame.contentDocument;
     if (!doc) return false;
     if (doc.getElementById("builderCursor")) return true;
 
@@ -479,8 +640,14 @@ async function ensurePreviewCursorInjected() {
   }
 }
 
-function applyPreviewCursorForState(state) {
-  const el = getPreviewCursorEl();
+async function ensurePreviewCursorInjectedAll() {
+  const docs = getPreviewDocuments();
+  if (!docs.length) return;
+  await Promise.all(docs.map(({ doc }) => ensurePreviewCursorInjected(doc)));
+}
+
+function applyPreviewCursorForStateInDoc(doc, state) {
+  const el = getPreviewCursorEl(doc);
   if (!el) return;
 
   if (!state || !state.cursorOn) {
@@ -497,7 +664,7 @@ function applyPreviewCursorForState(state) {
 
   // Position cursor relative to the visible video rect so it stays anchored
   // even when the video scales/crops with different screen resolutions.
-  const vids = getPreviewVideos();
+  const vids = getPreviewVideos(doc);
   const videoEl = vids?.main || null;
   if (!videoEl) {
     el.style.display = "block";
@@ -520,6 +687,12 @@ function applyPreviewCursorForState(state) {
   el.style.left = `${xPx}px`;
   el.style.top = `${yPx}px`;
   el.style.transform = `translate(-50%, -50%) scale(${scale})`;
+}
+
+function applyPreviewCursorForState(state) {
+  for (const { doc } of getPreviewDocuments()) {
+    applyPreviewCursorForStateInDoc(doc, state);
+  }
 }
 
 function renderTimeline() {
@@ -580,9 +753,8 @@ function updatePlayhead() {
   playheadEl.style.left = `${ratio * rect.width}px`;
 }
 
-function getPreviewVideos() {
+function getPreviewVideos(doc) {
   try {
-    const doc = previewFrame.contentDocument;
     if (!doc) return null;
     const main = doc.getElementById("video");
     const bg = doc.getElementById("background-video");
@@ -691,28 +863,63 @@ function startPreviewSyncLoop() {
 }
 
 function syncPreviewToControl(forceSeek) {
-  const vids = getPreviewVideos();
-  if (!vids) return;
+  const docs = getPreviewDocuments();
+  if (!docs.length) return;
   const t = clamp(controlVideo.currentTime || 0, 0, videoDuration || 0);
 
-  // Seek while playing (no pause). Seeking-while-playing = brief decode hiccup.
-  // Explicit pause→seek→play = visible freeze for the full decode window.
-  // NEVER call play() during an active seek — that causes the "stuck frame" bug.
-  [vids.main, vids.bg].forEach((v) => {
-    const cur = Number.isFinite(v.currentTime) ? v.currentTime : 0;
-    if (forceSeek || Math.abs(cur - t) > 0.06) {
-      try { v.currentTime = t; } catch { /* ignore */ }
-    }
-  });
+  // Some browsers occasionally leave <video> visually stuck after a forced
+  // seek while playing. In preview we can safely "kick" playback after the
+  // seek completes (never call play() while seeking).
+  const scheduleKickAfterSeek = (v) => {
+    if (!v) return;
+    if (!wantPlaying) return;
 
-  if (!wantPlaying) {
-    if (!vids.main.paused) vids.main.pause();
-    if (!vids.bg.paused) vids.bg.pause();
-  } else {
-    // Only resume if paused AND not mid-seek (calling play() during a seek
-    // interrupts the decode in some browsers, leaving the video on the stale frame).
-    if (vids.main.paused && !vids.main.seeking) vids.main.play().catch(() => {});
-    if (vids.bg.paused && !vids.bg.seeking) vids.bg.play().catch(() => {});
+    const tryKick = () => {
+      if (!wantPlaying) return;
+      try {
+        if (v.seeking) return;
+        v.play().catch(() => {
+          // ignore
+        });
+      } catch {
+        // ignore
+      }
+    };
+
+    try {
+      v.addEventListener("seeked", tryKick, { once: true });
+      v.addEventListener("canplay", tryKick, { once: true });
+    } catch {
+      // ignore
+    }
+
+    setTimeout(tryKick, 120);
+    setTimeout(tryKick, 260);
+  };
+
+  for (const { doc } of docs) {
+    const vids = getPreviewVideos(doc);
+    if (!vids) continue;
+
+    // Seek while playing (no pause). Seeking-while-playing = brief decode hiccup.
+    // Explicit pause→seek→play = visible freeze for the full decode window.
+    // NEVER call play() during an active seek — that causes the "stuck frame" bug.
+    [vids.main, vids.bg].forEach((v) => {
+      const cur = Number.isFinite(v.currentTime) ? v.currentTime : 0;
+      if (forceSeek || Math.abs(cur - t) > 0.06) {
+        try { v.currentTime = t; } catch { /* ignore */ }
+        scheduleKickAfterSeek(v);
+      }
+    });
+
+    if (!wantPlaying) {
+      if (!vids.main.paused) vids.main.pause();
+      if (!vids.bg.paused) vids.bg.pause();
+    } else {
+      // Only resume if paused AND not mid-seek.
+      if (vids.main.paused && !vids.main.seeking) vids.main.play().catch(() => {});
+      if (vids.bg.paused && !vids.bg.seeking) vids.bg.play().catch(() => {});
+    }
   }
 }
 
@@ -1167,7 +1374,7 @@ function renderStates() {
 
       if (v) {
         // If preview was rendered before cursor was enabled, inject it now.
-        void ensurePreviewCursorInjected().then(() => {
+        void ensurePreviewCursorInjectedAll().then(() => {
           runPreviewStateMachine();
         });
       } else {
@@ -1445,6 +1652,23 @@ previewBtn.addEventListener("click", async () => {
   await renderPreview();
 });
 
+if (previewPopoutBtn) {
+  previewPopoutBtn.addEventListener("click", async () => {
+    if (!templateHtml) {
+      setStatus("Template not loaded.");
+      return;
+    }
+    if (!selectedFile) {
+      setStatus("Choose an MP4 first.");
+      return;
+    }
+
+    // Must run on user gesture to avoid popup blockers.
+    setStatus("");
+    await renderPopoutFinalPreview();
+  });
+}
+
 // Timeline interaction: click selects a segment; clicking again on selected segment splits it.
 timelineEl.addEventListener("click", (e) => {
   if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) return;
@@ -1567,63 +1791,9 @@ controlVideo.addEventListener("ended", () => {
 // Wire openOnClick for the preview overlay.
 // Also sync playhead and resume play state after every iframe reload.
 previewFrame.addEventListener("load", () => {
-  // Attach overlay click listener immediately (doesn't require video to be ready).
-  try {
-    const doc = previewFrame.contentDocument;
-    if (doc) {
-      const overlay = doc.getElementById("overlay");
-      if (overlay) {
-        overlay.addEventListener("click", () => {
-          const cur = selectStateByTimeBiased(controlVideo.currentTime || 0, lastPreviewStateId);
-          if (!cur) return;
-
-          const curIdx = getStateIndexById(cur.id);
-
-          // exitOnClick: immediately jump to the next state.
-          // Must unlock first so the loop guard doesn't loop back when t reaches cur.end.
-          if (cur.exitOnClick && states[curIdx + 1]) {
-            const rt = getStateRuntime(cur.id);
-            if (rt) rt.unlocked = true;
-            setAllCurrentTimeKeepingPlay(cur.end);
-            return;
-          }
-
-          // If this is a loop state, clicking allows it to continue into the
-          // next state when the current loop reaches its end.
-          if (cur.loop) {
-            const next = states[curIdx + 1];
-            if (next) {
-              const rt = getStateRuntime(cur.id);
-              if (rt) rt.unlocked = true;
-              updateRuntimeStatus();
-              showToast(`Will continue to State ${curIdx + 2} at ${formatTime(cur.end)}.`);
-            }
-          }
-
-          if (cur.openOnClick) previewTriggerDownload("Open download on click");
-        });
-      }
-    }
-  } catch {
-    // Cross-origin guard — safe to ignore.
-  }
-
-  // Wait for the iframe video to finish its own .load() call before seeking;
-  // otherwise the seek is silently dropped (race with video.load() in Template).
-  // Retry up to 5 times, 80ms apart (~400ms max).
-  const trySync = (attemptsLeft) => {
-    const vids = getPreviewVideos();
-    if (!vids) {
-      if (attemptsLeft > 0) setTimeout(() => trySync(attemptsLeft - 1), 80);
-      return;
-    }
-    syncPreviewToControl(true);
-    if (previewWasPlaying) {
-      previewWasPlaying = false;
-      playAll();
-    }
-  };
-  setTimeout(() => trySync(5), 100);
+  // Iframe finished loading; wire overlay click + re-sync.
+  const doc = getIframeDocument();
+  if (doc) wirePreviewOverlayAndSync(doc);
 });
 
 // Preview controls

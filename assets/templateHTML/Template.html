@@ -100,14 +100,27 @@
             const video = document.getElementById('video');
             const bgVideo = document.getElementById('background-video');
 
+            function safePlay(v) {
+                try {
+                    const p = v.play();
+                    if (p && typeof p.catch === "function") {
+                        p.catch(function() {
+                            // Ignore autoplay/power-saver AbortError and similar play() rejections.
+                        });
+                    }
+                } catch (e) {
+                    // Ignore.
+                }
+            }
+
             video.src = mp4_portrait;
             bgVideo.src = mp4_portrait;
 
             video.load();
-            video.play();
+            safePlay(video);
 
             bgVideo.load();
-            bgVideo.play();
+            safePlay(bgVideo);
 
             if (!window.__BUILDER_PREVIEW__) {
                 handlerLogic();
