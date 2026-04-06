@@ -1,6 +1,7 @@
 /* Minimal static builder for assets/templateHTML/Template.html */
 
 const TEMPLATE_PATH = "assets/templateHTML/Template.html";
+const CURSOR_GIF_PATH = "assets/cursor/Cursor.gif";
 
 const titleInput = document.getElementById("titleInput");
 const clickUrlInput = document.getElementById("clickUrlInput");
@@ -28,6 +29,9 @@ const nextFrameBtn = document.getElementById("nextFrameBtn");
 let templateHtml = "";
 let selectedFile = null;
 let selectedFileObjectUrl = null;
+
+let cursorGifDataUrl = "";
+let cursorGifLoadPromise = null;
 
 let videoDuration = 0;
 let states = [];
@@ -185,6 +189,34 @@ function mp4ToDataUrl(file) {
   });
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function ensureCursorGifDataUrl() {
+  if (cursorGifDataUrl) return cursorGifDataUrl;
+  if (cursorGifLoadPromise) return cursorGifLoadPromise;
+
+  cursorGifLoadPromise = (async () => {
+    const res = await fetch(CURSOR_GIF_PATH, { cache: "no-store" });
+    if (!res.ok) {
+      throw new Error(`Failed to load cursor GIF: ${CURSOR_GIF_PATH} (${res.status})`);
+    }
+    const blob = await res.blob();
+    cursorGifDataUrl = String(await blobToDataUrl(blob));
+    return cursorGifDataUrl;
+  })().finally(() => {
+    cursorGifLoadPromise = null;
+  });
+
+  return cursorGifLoadPromise;
+}
+
 function applyInputsToTemplate(inputTemplate, { title, videoDataUrl, clickUrl }) {
   let out = inputTemplate;
 
@@ -267,13 +299,30 @@ function setSelectedFile(file) {
   updateUiState();
 }
 
-function renderPreview() {
+async function renderPreview() {
   if (!templateHtml || !selectedFile) return;
 
   const title = titleInput.value.trim() || "Playable";
   const clickUrl = clickUrlInput.value.trim() || "";
+  const cursorWanted = states.some((s) => Boolean(s && s.cursorOn));
 
   if (!selectedFileObjectUrl) return;
+
+  let cursorDataUrl = "";
+  if (cursorWanted) {
+    try {
+      setStatus("Loading cursor GIF...");
+      cursorDataUrl = await ensureCursorGifDataUrl();
+    } catch (err) {
+      setStatus("Failed to load cursor GIF (export/preview may miss cursor). See console.");
+      // eslint-disable-next-line no-console
+      console.error(err);
+      cursorDataUrl = "";
+    } finally {
+      // If we previously set a loading/error status, clear it for the preview flow.
+      if (statusEl.textContent.startsWith("Loading cursor GIF")) setStatus("");
+    }
+  }
 
   const out = applyInputsToTemplate(templateHtml, {
     title,
@@ -281,7 +330,9 @@ function renderPreview() {
     clickUrl,
   });
 
-  const previewOut = out.replace(
+  const withStates = applyStatesToTemplate(out, states, clickUrl, cursorDataUrl);
+
+  const previewOut = withStates.replace(
     /<head(\s*)>/i,
     (m) => `${m}\n    <script>window.__BUILDER_PREVIEW__ = true;</script>`
   );
@@ -363,12 +414,112 @@ function resetStates(durationSec) {
     exitOnClick: false,
     openOnEnter: false,
     openOnClick: false,
+    cursorOn: false,
+    cursorX: 50,
+    cursorY: 50,
+    cursorScale: 100,
   };
   states.push(first);
   selectedStateId = first.id;
   renderTimeline();
   renderStates();
   updateUiState();
+}
+
+function getPreviewCursorEl() {
+  try {
+    const doc = previewFrame.contentDocument;
+    if (!doc) return null;
+    return doc.getElementById("builderCursor");
+  } catch {
+    return null;
+  }
+}
+
+async function ensurePreviewCursorInjected() {
+  try {
+    const doc = previewFrame.contentDocument;
+    if (!doc) return false;
+    if (doc.getElementById("builderCursor")) return true;
+
+    const dataUrl = await ensureCursorGifDataUrl();
+
+    // Style: add once.
+    if (!doc.getElementById("builderCursorStyle")) {
+      const style = doc.createElement("style");
+      style.id = "builderCursorStyle";
+      style.textContent = `
+#builderCursor {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 96px;
+  height: 96px;
+  transform: translate(-50%, -50%);
+  z-index: 10000;
+  pointer-events: none;
+  display: none;
+}
+`;
+      doc.head.appendChild(style);
+    }
+
+    const img = doc.createElement("img");
+    img.id = "builderCursor";
+    img.alt = "";
+    img.setAttribute("aria-hidden", "true");
+    img.src = dataUrl;
+
+    (doc.body || doc.documentElement).appendChild(img);
+    return true;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(err);
+    return false;
+  }
+}
+
+function applyPreviewCursorForState(state) {
+  const el = getPreviewCursorEl();
+  if (!el) return;
+
+  if (!state || !state.cursorOn) {
+    el.style.display = "none";
+    return;
+  }
+
+  const xRaw = Number(state.cursorX);
+  const yRaw = Number(state.cursorY);
+  const xPct = Number.isFinite(xRaw) ? clamp(xRaw, 0, 100) : 50;
+  const yPct = Number.isFinite(yRaw) ? clamp(yRaw, 0, 100) : 50;
+  const scaleRaw = Number(state.cursorScale);
+  const scale = (Number.isFinite(scaleRaw) ? clamp(scaleRaw, 10, 300) : 100) / 100;
+
+  // Position cursor relative to the visible video rect so it stays anchored
+  // even when the video scales/crops with different screen resolutions.
+  const vids = getPreviewVideos();
+  const videoEl = vids?.main || null;
+  if (!videoEl) {
+    el.style.display = "block";
+    el.style.left = `${xPct}%`;
+    el.style.top = `${yPct}%`;
+    return;
+  }
+
+  const rect = videoEl.getBoundingClientRect();
+  if (!rect || !rect.width || !rect.height) {
+    el.style.display = "block";
+    el.style.left = `${xPct}%`;
+    el.style.top = `${yPct}%`;
+    return;
+  }
+
+  const xPx = rect.left + (xPct / 100) * rect.width;
+  const yPx = rect.top + (yPct / 100) * rect.height;
+  el.style.display = "block";
+  el.style.left = `${xPx}px`;
+  el.style.top = `${yPx}px`;
+  el.style.transform = `translate(-50%, -50%) scale(${scale})`;
 }
 
 function renderTimeline() {
@@ -491,6 +642,9 @@ function runPreviewStateMachine() {
 
   const cur = selectStateByTimeBiased(t, lastPreviewStateId);
   if (!cur) return;
+
+  // Cursor preview is driven from the parent (Template's handlerLogic is skipped in preview mode).
+  applyPreviewCursorForState(cur);
 
   // Detect state entry (only fires once per transition).
   if (cur.id !== lastPreviewStateId) {
@@ -861,6 +1015,166 @@ function renderStates() {
     );
 
     wrap.appendChild(checks);
+
+    // Cursor controls (hidden unless cursorOn is enabled)
+    const cursorConfig = document.createElement("div");
+    cursorConfig.className = "cursor-config";
+
+    const cursorCheckLabel = document.createElement("label");
+    cursorCheckLabel.className = "check";
+    const cursorCheckInput = document.createElement("input");
+    cursorCheckInput.type = "checkbox";
+    cursorCheckInput.checked = Boolean(s.cursorOn);
+    const cursorCheckText = document.createElement("span");
+    cursorCheckText.textContent = "Cursor (GIF)";
+    cursorCheckLabel.appendChild(cursorCheckInput);
+    cursorCheckLabel.appendChild(cursorCheckText);
+    checks.appendChild(cursorCheckLabel);
+
+    const nudge = document.createElement("div");
+    nudge.className = "cursor-nudge";
+
+    const mkNudgeBtn = (text, title, onClick) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn btn--secondary btn--tiny";
+      b.textContent = text;
+      b.title = title;
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        onClick();
+      });
+      return b;
+    };
+
+    const cursorRow = document.createElement("div");
+    cursorRow.className = "state__row";
+
+    const xField = document.createElement("div");
+    xField.className = "field";
+    const xLabel = document.createElement("label");
+    xLabel.className = "label";
+    xLabel.textContent = "Cursor X (% of video)";
+    const xInput = document.createElement("input");
+    xInput.className = "input";
+    xInput.type = "number";
+    xInput.step = "1";
+    xInput.min = "0";
+    xInput.max = "100";
+    const xVal = Number(s.cursorX);
+    xInput.value = String(Number.isFinite(xVal) ? clamp(xVal, 0, 100) : 50);
+    xInput.addEventListener("change", () => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      const proposed = Number(xInput.value);
+      const nextVal = Number.isFinite(proposed) ? clamp(proposed, 0, 100) : 50;
+      states[i].cursorX = nextVal;
+      xInput.value = String(nextVal);
+      runPreviewStateMachine();
+    });
+    xField.appendChild(xLabel);
+    xField.appendChild(xInput);
+
+    const yField = document.createElement("div");
+    yField.className = "field";
+    const yLabel = document.createElement("label");
+    yLabel.className = "label";
+    yLabel.textContent = "Cursor Y (% of video)";
+    const yInput = document.createElement("input");
+    yInput.className = "input";
+    yInput.type = "number";
+    yInput.step = "1";
+    yInput.min = "0";
+    yInput.max = "100";
+    const yVal = Number(s.cursorY);
+    yInput.value = String(Number.isFinite(yVal) ? clamp(yVal, 0, 100) : 50);
+    yInput.addEventListener("change", () => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      const proposed = Number(yInput.value);
+      const nextVal = Number.isFinite(proposed) ? clamp(proposed, 0, 100) : 50;
+      states[i].cursorY = nextVal;
+      yInput.value = String(nextVal);
+      runPreviewStateMachine();
+    });
+    yField.appendChild(yLabel);
+    yField.appendChild(yInput);
+
+    cursorRow.appendChild(xField);
+    cursorRow.appendChild(yField);
+
+    const scaleField = document.createElement("div");
+    scaleField.className = "field";
+    const scaleLabel = document.createElement("label");
+    scaleLabel.className = "label";
+    scaleLabel.textContent = "Cursor scale (%)";
+    const scaleInput = document.createElement("input");
+    scaleInput.className = "input";
+    scaleInput.type = "number";
+    scaleInput.step = "5";
+    scaleInput.min = "10";
+    scaleInput.max = "300";
+    const scaleVal = Number(s.cursorScale);
+    scaleInput.value = String(Number.isFinite(scaleVal) ? clamp(scaleVal, 10, 300) : 100);
+    scaleInput.addEventListener("change", () => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      const proposed = Number(scaleInput.value);
+      const nextVal = Number.isFinite(proposed) ? clamp(proposed, 10, 300) : 100;
+      states[i].cursorScale = nextVal;
+      scaleInput.value = String(nextVal);
+      runPreviewStateMachine();
+    });
+    scaleField.appendChild(scaleLabel);
+    scaleField.appendChild(scaleInput);
+
+    const nudgeBy = (dx, dy) => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      const curX = Number(states[i].cursorX);
+      const curY = Number(states[i].cursorY);
+      const x = clamp((Number.isFinite(curX) ? curX : 50) + dx, 0, 100);
+      const y = clamp((Number.isFinite(curY) ? curY : 50) + dy, 0, 100);
+      states[i].cursorX = x;
+      states[i].cursorY = y;
+      xInput.value = String(Math.round(x));
+      yInput.value = String(Math.round(y));
+      runPreviewStateMachine();
+    };
+
+    // Horizontal row (above scale field)
+    nudge.appendChild(mkNudgeBtn("←", "Move left (1% of video)", () => nudgeBy(-1, 0)));
+    nudge.appendChild(mkNudgeBtn("↑", "Move up (1% of video)", () => nudgeBy(0, -1)));
+    nudge.appendChild(mkNudgeBtn("↓", "Move down (1% of video)", () => nudgeBy(0, 1)));
+    nudge.appendChild(mkNudgeBtn("→", "Move right (1% of video)", () => nudgeBy(1, 0)));
+
+    cursorConfig.appendChild(scaleField);
+    cursorConfig.appendChild(cursorRow);
+    cursorConfig.appendChild(nudge);
+    wrap.appendChild(cursorConfig);
+
+    const setCursorConfigVisible = (visible) => {
+      cursorConfig.style.display = visible ? "" : "none";
+    };
+    setCursorConfigVisible(Boolean(s.cursorOn));
+
+    cursorCheckInput.addEventListener("change", () => {
+      const i = getStateIndexById(s.id);
+      if (i < 0) return;
+      const v = Boolean(cursorCheckInput.checked);
+      states[i].cursorOn = v;
+      setCursorConfigVisible(v);
+
+      if (v) {
+        // If preview was rendered before cursor was enabled, inject it now.
+        void ensurePreviewCursorInjected().then(() => {
+          runPreviewStateMachine();
+        });
+      } else {
+        runPreviewStateMachine();
+      }
+    });
+
     frag.appendChild(wrap);
   });
 
@@ -923,6 +1237,10 @@ function buildExportHandlerCode(states, clickUrl) {
       exitOnClick: Boolean(s.exitOnClick),
       openOnEnter: Boolean(s.openOnEnter),
       openOnClick: Boolean(s.openOnClick),
+      cursorOn: Boolean(s.cursorOn),
+      cursorX: Number.isFinite(Number(s.cursorX)) ? clamp(Number(s.cursorX), 0, 100) : 50,
+      cursorY: Number.isFinite(Number(s.cursorY)) ? clamp(Number(s.cursorY), 0, 100) : 50,
+      cursorScale: Number.isFinite(Number(s.cursorScale)) ? clamp(Number(s.cursorScale), 10, 300) : 100,
     })),
     null,
     4
@@ -933,6 +1251,7 @@ function buildExportHandlerCode(states, clickUrl) {
         function handlerLogic() {
             var _v = document.getElementById('video');
             var _bg = document.getElementById('background-video');
+          var _cursor = document.getElementById('builderCursor');
             // Disable native loop — state machine controls all looping.
             _v.loop = false;
             _bg.loop = false;
@@ -941,6 +1260,28 @@ function buildExportHandlerCode(states, clickUrl) {
             var _idx = 0;
             var _unlocked = false;
             var _thr = 1 / 30;
+          function _clamp(n, lo, hi) {
+            n = Number(n);
+            if (!isFinite(n)) return lo;
+            return Math.min(Math.max(n, lo), hi);
+          }
+          function _applyCursor() {
+            if (!_cursor || !_v) return;
+            var c = _states[_idx];
+            if (!c || !c.cursorOn) { _cursor.style.display = 'none'; return; }
+            var rect = _v.getBoundingClientRect();
+            if (!rect || !rect.width || !rect.height) { _cursor.style.display = 'none'; return; }
+
+            var xPct = _clamp(c.cursorX, 0, 100);
+            var yPct = _clamp(c.cursorY, 0, 100);
+            var x = rect.left + (xPct / 100) * rect.width;
+            var y = rect.top + (yPct / 100) * rect.height;
+            var sc = _clamp(c.cursorScale, 10, 300) / 100;
+            _cursor.style.display = 'block';
+            _cursor.style.left = x + 'px';
+            _cursor.style.top = y + 'px';
+            _cursor.style.transform = 'translate(-50%, -50%) scale(' + sc + ')';
+          }
             function _open() {
                 if (!_url) return;
                 if (window.mraid) { window.mraid.open(_url); }
@@ -956,6 +1297,7 @@ function buildExportHandlerCode(states, clickUrl) {
                     state = _idx + 1;
                     _v.currentTime = _bg.currentTime = _states[_idx].start;
                     if (_states[_idx].openOnEnter) _open();
+              _applyCursor();
                     return;
                 }
                 if (c.openOnClick) _open();
@@ -966,8 +1308,10 @@ function buildExportHandlerCode(states, clickUrl) {
             _v.addEventListener('loadedmetadata', function () {
                 state = 1;
                 if (_states.length && _states[0].openOnEnter) _open();
+            _applyCursor();
                 requestAnimationFrame(_tick);
             });
+            try { window.addEventListener('resize', _applyCursor); } catch (e) {}
             function _tick() {
                 var t = _v.currentTime;
                 var c = _states[_idx];
@@ -981,6 +1325,7 @@ function buildExportHandlerCode(states, clickUrl) {
                         _unlocked = false;
                         state = _idx + 1;
                         if (_states[_idx].openOnEnter) _open();
+                _applyCursor();
                     }
                 }
                 requestAnimationFrame(_tick);
@@ -989,7 +1334,28 @@ function buildExportHandlerCode(states, clickUrl) {
         // @@BUILDER_HANDLER_END@@`;
 }
 
-function applyStatesToTemplate(html, states, clickUrl) {
+    function injectCursorIntoTemplate(html, cursorDataUrl) {
+      if (!cursorDataUrl) return html;
+      let out = html;
+
+      // Add cursor CSS into the first <style> block.
+      out = out.replace(
+      /<style>([\s\S]*?)<\/style>/i,
+      (m, cssText) => `<style>${cssText}\n\n        #builderCursor {\n            position: fixed;\n            left: 50%;\n            top: 50%;\n            width: 96px;\n            height: 96px;\n            transform: translate(-50%, -50%);\n            z-index: 10000;\n            pointer-events: none;\n            display: none;\n        }\n    </style>`
+      );
+
+      // Add cursor element once, near the end of <body>.
+      if (!out.includes('id="builderCursor"')) {
+      out = out.replace(
+        /<\/body>/i,
+        `    <img id="builderCursor" aria-hidden="true" alt="" src="${cursorDataUrl}" />\n</body>`
+      );
+      }
+
+      return out;
+    }
+
+    function applyStatesToTemplate(html, states, clickUrl, cursorDataUrl) {
   if (!states || states.length === 0) return html;
   let out = html;
 
@@ -1009,6 +1375,8 @@ function applyStatesToTemplate(html, states, clickUrl) {
         // @@BUILDER_CLICK_END@@`
   );
 
+  out = injectCursorIntoTemplate(out, cursorDataUrl);
+
   return out;
 }
 
@@ -1027,9 +1395,16 @@ exportBtn.addEventListener("click", async () => {
 
   const title = titleInput.value.trim() || "Playable";
   const clickUrl = clickUrlInput.value.trim() || "";
+  const cursorWanted = states.some((s) => Boolean(s && s.cursorOn));
 
   try {
     exportBtn.disabled = true;
+    let cursorDataUrl = "";
+    if (cursorWanted) {
+      setStatus("Loading cursor GIF...");
+      cursorDataUrl = await ensureCursorGifDataUrl();
+    }
+
     setStatus("Converting video to Base64... (may take a while)");
 
     const videoDataUrl = await mp4ToDataUrl(selectedFile);
@@ -1040,7 +1415,7 @@ exportBtn.addEventListener("click", async () => {
       videoDataUrl,
       clickUrl,
     });
-    const finalOut = applyStatesToTemplate(out, states, clickUrl);
+    const finalOut = applyStatesToTemplate(out, states, clickUrl, cursorDataUrl);
 
     setStatus("Downloading...");
     const filename = `${toSafeFilename(title)}.html`;
@@ -1057,7 +1432,7 @@ exportBtn.addEventListener("click", async () => {
 });
 
 // Preview
-previewBtn.addEventListener("click", () => {
+previewBtn.addEventListener("click", async () => {
   if (!templateHtml) {
     setStatus("Template not loaded.");
     return;
@@ -1067,7 +1442,7 @@ previewBtn.addEventListener("click", () => {
     return;
   }
   setStatus("");
-  renderPreview();
+  await renderPreview();
 });
 
 // Timeline interaction: click selects a segment; clicking again on selected segment splits it.
@@ -1150,6 +1525,7 @@ controlVideo.addEventListener("loadedmetadata", () => {
 controlVideo.addEventListener("timeupdate", () => {
   updateTimelineMeta();
   updatePlayhead();
+  runPreviewStateMachine();
   syncPreviewToControl(false);
 });
 
@@ -1164,6 +1540,7 @@ controlVideo.addEventListener("seeked", () => {
     clearTimeout(_programmaticSeekResetTimer);
     return;
   }
+  runPreviewStateMachine();
   // User-initiated seek (native browser scrubbar, etc.) — sync iframe to match.
   syncPreviewToControl(true);
 });
@@ -1277,3 +1654,8 @@ nextFrameBtn.addEventListener("click", () => {
 // Init
 loadTemplate();
 updateUiState();
+
+// Keep preview cursor anchored if the builder layout/iframe size changes.
+window.addEventListener("resize", () => {
+  runPreviewStateMachine();
+});

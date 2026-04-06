@@ -154,6 +154,12 @@ html, body {
   border-color: #d1d5db;
 }
 
+.btn--tiny {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 10px;
+}
+
 .status {
   font-size: 13px;
   min-height: 18px;
@@ -308,6 +314,26 @@ code {
   margin-top: 10px;
   display: grid;
   gap: 8px;
+}
+
+.cursor-tools {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.cursor-nudge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cursor-config {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
 }
 
 .check {

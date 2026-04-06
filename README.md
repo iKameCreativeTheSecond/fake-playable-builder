@@ -32,6 +32,7 @@ npx serve
 ## Notes
 
 - The exported HTML can be very large because the MP4 is embedded as Base64.
+- If you enable **Cursor (GIF)** on any state, the exported HTML also embeds `assets/cursor/Cursor.gif` as a Base64 data URL.
 
 ## Deploy to GitLab Pages (CI/CD)
 
