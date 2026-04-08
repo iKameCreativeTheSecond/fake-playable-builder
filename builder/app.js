@@ -54,6 +54,13 @@ let previewSyncRaf = 0;
 let playheadHandleEl = null;
 let isPlayheadDragging = false;
 
+let timelineSegEls = [];
+let boundaryEls = [];
+let boundaryHandleEls = [];
+let isBoundaryDragging = false;
+let draggingBoundaryIndex = -1;
+let draggingBoundaryPointerId = null;
+
 let lastPreviewStateId = null;
 let previewWasPlaying = false;
 let toastTimer = 0;
@@ -751,6 +758,8 @@ function applyPreviewCursorForState(state) {
 function renderTimeline() {
   timelineEl.innerHTML = "";
 
+  timelineSegEls = [];
+
   // The playhead is rendered into the timeline wrapper (overlay) so the handle
   // can protrude outside the bar even when the bar itself is overflow:hidden.
   if (playheadEl && playheadEl.parentNode) {
@@ -758,6 +767,15 @@ function renderTimeline() {
   }
   playheadEl = null;
   playheadHandleEl = null;
+
+  // Remove boundary handles from previous render.
+  for (const el of boundaryEls) {
+    if (el && el.parentNode) {
+      try { el.parentNode.removeChild(el); } catch { /* ignore */ }
+    }
+  }
+  boundaryEls = [];
+  boundaryHandleEls = [];
 
   if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
     timelineEl.style.opacity = "0.6";
@@ -773,6 +791,7 @@ function renderTimeline() {
     seg.style.flex = `${Math.max(frac, 0)} 0 0`;
     seg.title = `${formatTime(s.start)} → ${formatTime(s.end)}`;
     frag.appendChild(seg);
+    timelineSegEls.push(seg);
   }
   timelineEl.appendChild(frag);
 
@@ -794,8 +813,163 @@ function renderTimeline() {
     timelineEl.appendChild(playheadEl);
   }
 
+  // Boundary handles (between states)
+  if (states.length >= 2) {
+    for (let i = 0; i < states.length - 1; i++) {
+      const b = document.createElement("div");
+      b.className = "timeline__boundary";
+      b.dataset.boundaryIndex = String(i);
+
+      const h = document.createElement("div");
+      h.className = "timeline__boundary-handle";
+      h.title = `Adjust boundary between State ${i + 1} and State ${i + 2}`;
+      b.appendChild(h);
+
+      boundaryEls.push(b);
+      boundaryHandleEls.push(h);
+
+      if (timelineWrapEl) {
+        timelineWrapEl.appendChild(b);
+      } else {
+        timelineEl.appendChild(b);
+      }
+
+      wireBoundaryHandleDrag(h, i);
+    }
+  }
+
   wirePlayheadHandleDrag();
   updatePlayhead();
+  updateTimelineSegments();
+  updateTimelineBoundaryPositions();
+}
+
+function updateTimelineSegments() {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  if (!timelineEl) return;
+
+  // Update segments (flex + selected highlight + tooltip).
+  if (timelineSegEls && timelineSegEls.length === states.length) {
+    for (let i = 0; i < states.length; i++) {
+      const s = states[i];
+      const seg = timelineSegEls[i];
+      if (!seg || !s) continue;
+      const frac = (s.end - s.start) / videoDuration;
+      seg.style.flex = `${Math.max(frac, 0)} 0 0`;
+      seg.title = `${formatTime(s.start)} → ${formatTime(s.end)}`;
+      if (s.id === selectedStateId) seg.classList.add("timeline__seg--selected");
+      else seg.classList.remove("timeline__seg--selected");
+    }
+  }
+
+}
+
+function updateTimelineBoundaryPositions() {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  if (!timelineEl) return;
+  if (!boundaryEls || boundaryEls.length === 0) return;
+
+  const rect = timelineEl.getBoundingClientRect();
+  if (!rect.width) return;
+
+  let wrapRect = null;
+  if (timelineWrapEl) wrapRect = timelineWrapEl.getBoundingClientRect();
+
+  for (let i = 0; i < boundaryEls.length; i++) {
+    const el = boundaryEls[i];
+    const s = states[i];
+    if (!el || !s) continue;
+    const boundaryTime = clamp(Number(s.end), 0, videoDuration);
+    const ratio = videoDuration ? boundaryTime / videoDuration : 0;
+    let leftPx = ratio * rect.width;
+    if (wrapRect) leftPx += (rect.left - wrapRect.left);
+    el.style.left = `${leftPx}px`;
+    el.style.top = `${timelineEl.offsetTop}px`;
+    el.style.height = `${timelineEl.offsetHeight}px`;
+  }
+}
+
+function setBoundaryTimeFromClientX(boundaryIndex, clientX) {
+  if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+  if (boundaryIndex < 0 || boundaryIndex >= states.length - 1) return;
+  const leftState = states[boundaryIndex];
+  const rightState = states[boundaryIndex + 1];
+  if (!leftState || !rightState) return;
+
+  const proposed = snapToFrame(getTimelineTimeFromClientX(clientX));
+  const min = leftState.start + MIN_GAP_SEC;
+  const max = rightState.end - MIN_GAP_SEC;
+  const t = clamp(proposed, min, max);
+
+  leftState.end = t;
+  rightState.start = t;
+
+  updateTimelineSegments();
+  updateTimelineBoundaryPositions();
+  updateTimelineMeta();
+  runPreviewStateMachine();
+  syncPreviewToControl(false);
+}
+
+function wireBoundaryHandleDrag(handleEl, boundaryIndex) {
+  if (!handleEl) return;
+
+  // Prevent click from bubbling into timeline click-to-split logic
+  // (relevant in the no-wrapper fallback where handles are children of timelineEl).
+  handleEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  handleEl.addEventListener("pointerdown", (e) => {
+    if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
+    if (!states || states.length < 2) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    resetPreviewRuntimeFlags();
+    pauseAll();
+
+    isBoundaryDragging = true;
+    draggingBoundaryIndex = boundaryIndex;
+    draggingBoundaryPointerId = e.pointerId;
+
+    setBoundaryTimeFromClientX(boundaryIndex, e.clientX);
+
+    try {
+      handleEl.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  });
+
+  handleEl.addEventListener("pointermove", (e) => {
+    if (!isBoundaryDragging) return;
+    if (draggingBoundaryIndex !== boundaryIndex) return;
+    if (draggingBoundaryPointerId !== null && e.pointerId !== draggingBoundaryPointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setBoundaryTimeFromClientX(boundaryIndex, e.clientX);
+  });
+
+  const stop = (e) => {
+    if (!isBoundaryDragging) return;
+    if (draggingBoundaryIndex !== boundaryIndex) return;
+    if (e) {
+      try { e.preventDefault(); } catch { /* ignore */ }
+      try { e.stopPropagation(); } catch { /* ignore */ }
+    }
+    isBoundaryDragging = false;
+    draggingBoundaryIndex = -1;
+    draggingBoundaryPointerId = null;
+    // Refresh state form fields (start/end inputs) after drag finishes.
+    renderStates();
+    updateStateNavButtons();
+    updateStateCounter();
+  };
+
+  handleEl.addEventListener("pointerup", stop);
+  handleEl.addEventListener("pointercancel", stop);
 }
 
 function updateTimelineMeta() {
@@ -833,6 +1007,9 @@ function updatePlayhead() {
     playheadEl.style.height = `${timelineEl.offsetHeight}px`;
   }
   playheadEl.style.left = `${leftPx}px`;
+
+  // Keep boundary handles aligned if layout changes.
+  updateTimelineBoundaryPositions();
 }
 
 function getPreviewVideos(doc) {
@@ -1940,4 +2117,6 @@ updateUiState();
 // Keep preview cursor anchored if the builder layout/iframe size changes.
 window.addEventListener("resize", () => {
   runPreviewStateMachine();
+  updatePlayhead();
+  updateTimelineBoundaryPositions();
 });

@@ -251,11 +251,47 @@ code {
   z-index: 5;
 }
 
+.timeline__boundary {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 18px;
+  background: #d1d5db;
+  pointer-events: none;
+  transform: translateX(-1px);
+  z-index: 4;
+}
+
+.timeline__boundary-handle {
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  width: 6px;
+  height: 28px;
+  border-radius: 999px;
+  background: #f8f6fa;
+  border: 2px solid #a39ea4;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 6;
+}
+
+.timeline__boundary-handle:hover {
+  border-color: #6b7280;
+}
+
+.timeline__boundary-handle:active {
+  cursor: ew-resize;
+  border-color: #6b7280;
+}
+
 .timeline__handle {
   position: absolute;
   left: 50%;
   top: -7px;
-  width: 10px;
+  width: 12px;
   height: 30px;
   border-radius: 999px;
   background: #fff;
