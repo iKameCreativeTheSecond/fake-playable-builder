@@ -16,6 +16,7 @@ const previewNote = document.getElementById("previewNote");
 const previewFrame = document.getElementById("previewFrame");
 const controlVideo = document.getElementById("controlVideo");
 const timelineEl = document.getElementById("timeline");
+const timelineWrapEl = timelineEl ? timelineEl.parentElement : null;
 const timelineMeta = document.getElementById("timelineMeta");
 const statesList = document.getElementById("statesList");
 const runtimeStatusEl = document.getElementById("runtimeStatus");
@@ -749,6 +750,15 @@ function applyPreviewCursorForState(state) {
 
 function renderTimeline() {
   timelineEl.innerHTML = "";
+
+  // The playhead is rendered into the timeline wrapper (overlay) so the handle
+  // can protrude outside the bar even when the bar itself is overflow:hidden.
+  if (playheadEl && playheadEl.parentNode) {
+    try { playheadEl.parentNode.removeChild(playheadEl); } catch { /* ignore */ }
+  }
+  playheadEl = null;
+  playheadHandleEl = null;
+
   if (!Number.isFinite(videoDuration) || videoDuration <= 0 || states.length === 0) {
     timelineEl.style.opacity = "0.6";
     return;
@@ -772,7 +782,17 @@ function renderTimeline() {
   playheadHandleEl = document.createElement("div");
   playheadHandleEl.className = "timeline__handle";
   playheadEl.appendChild(playheadHandleEl);
-  timelineEl.appendChild(playheadEl);
+
+  // Append to wrapper (overlay) instead of inside the timeline bar.
+  if (timelineWrapEl) {
+    // Align playhead to the bar's top/height.
+    playheadEl.style.top = `${timelineEl.offsetTop}px`;
+    playheadEl.style.height = `${timelineEl.offsetHeight}px`;
+    timelineWrapEl.appendChild(playheadEl);
+  } else {
+    // Fallback: old behavior.
+    timelineEl.appendChild(playheadEl);
+  }
 
   wirePlayheadHandleDrag();
   updatePlayhead();
@@ -802,7 +822,17 @@ function updatePlayhead() {
   playheadEl.style.display = "block";
   const t = clamp(controlVideo.currentTime || 0, 0, videoDuration);
   const ratio = videoDuration ? t / videoDuration : 0;
-  playheadEl.style.left = `${ratio * rect.width}px`;
+
+  // If playhead is in wrapper overlay, convert timeline-local X to wrapper-local X.
+  let leftPx = ratio * rect.width;
+  if (timelineWrapEl) {
+    const wrapRect = timelineWrapEl.getBoundingClientRect();
+    leftPx += (rect.left - wrapRect.left);
+    // Keep playhead aligned even if layout changes.
+    playheadEl.style.top = `${timelineEl.offsetTop}px`;
+    playheadEl.style.height = `${timelineEl.offsetHeight}px`;
+  }
+  playheadEl.style.left = `${leftPx}px`;
 }
 
 function getPreviewVideos(doc) {

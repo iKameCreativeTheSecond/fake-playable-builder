@@ -206,6 +206,7 @@ code {
 
 .timeline-wrap {
   margin-top: 12px;
+  position: relative;
 }
 
 .timeline {
@@ -241,20 +242,21 @@ code {
 
 .timeline__playhead {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
+  top: 0;
   width: 2px;
+  height: 18px;
   background: #6b7280;
   pointer-events: none;
   transform: translateX(-1px);
+  z-index: 5;
 }
 
 .timeline__handle {
   position: absolute;
   left: 50%;
-  top: -10px;
-  width: 16px;
-  height: 38px;
+  top: -7px;
+  width: 10px;
+  height: 30px;
   border-radius: 999px;
   background: #fff;
   border: 2px solid #6b7280;
@@ -262,6 +264,7 @@ code {
   pointer-events: auto;
   cursor: grab;
   touch-action: none;
+  z-index: 6;
 }
 
 .timeline__handle:active {
