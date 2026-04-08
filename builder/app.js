@@ -1586,16 +1586,104 @@ function renderStates() {
   const nudge = document.createElement("div");
   nudge.className = "cursor-nudge";
 
+  const bindHoldRepeat = (btn, stepFn, { initialDelayMs = 300, repeatEveryMs = 60 } = {}) => {
+    let repeatTimeout = 0;
+    let repeatInterval = 0;
+    let activePointerId = null;
+    let lastPointerDownAt = 0;
+
+    const cleanupDocListeners = () => {
+      document.removeEventListener("pointerup", onDocPointerUp);
+      document.removeEventListener("pointercancel", onDocPointerCancel);
+    };
+
+    const stop = () => {
+      if (repeatTimeout) clearTimeout(repeatTimeout);
+      if (repeatInterval) clearInterval(repeatInterval);
+      repeatTimeout = 0;
+      repeatInterval = 0;
+      activePointerId = null;
+      cleanupDocListeners();
+    };
+
+    const start = (pointerId) => {
+      stop();
+      activePointerId = pointerId;
+      stepFn();
+      repeatTimeout = setTimeout(() => {
+        repeatInterval = setInterval(() => {
+          stepFn();
+        }, repeatEveryMs);
+      }, initialDelayMs);
+    };
+
+    const onDocPointerUp = (e) => {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      stop();
+    };
+    const onDocPointerCancel = (e) => {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      stop();
+    };
+
+    btn.addEventListener("pointerdown", (e) => {
+      if (btn.disabled) return;
+      if (e.button !== undefined && e.button !== 0) return;
+      lastPointerDownAt = Date.now();
+      e.preventDefault();
+
+      try {
+        btn.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+
+      start(e.pointerId);
+      document.addEventListener("pointerup", onDocPointerUp);
+      document.addEventListener("pointercancel", onDocPointerCancel);
+    });
+
+    btn.addEventListener("lostpointercapture", () => {
+      stop();
+    });
+
+    btn.addEventListener("click", (e) => {
+      // Avoid double-trigger: pointerdown already performed an action.
+      if (Date.now() - lastPointerDownAt < 800) {
+        e.preventDefault();
+        return;
+      }
+      stepFn();
+    });
+
+    btn.addEventListener("contextmenu", (e) => {
+      // Prevent long-press context menus on some platforms.
+      if (activePointerId !== null) e.preventDefault();
+    });
+
+    // Best-effort extra stop conditions.
+    btn.addEventListener("pointerup", stop);
+    btn.addEventListener("pointercancel", stop);
+    btn.addEventListener("pointerleave", () => {
+      if (activePointerId === null) return;
+      stop();
+    });
+    btn.addEventListener("blur", stop);
+  };
+
   const mkNudgeBtn = (text, title, onClick) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "btn btn--secondary btn--tiny";
     b.textContent = text;
     b.title = title;
-    b.addEventListener("click", (e) => {
-      e.preventDefault();
-      onClick();
-    });
+    bindHoldRepeat(
+      b,
+      () => {
+        onClick();
+      },
+      { initialDelayMs: 250, repeatEveryMs: 55 }
+    );
     return b;
   };
 
