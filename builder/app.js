@@ -1518,6 +1518,8 @@ function renderStates() {
   });
   checks.appendChild(loopCheck.label);
 
+  let exitOnClickCheck = null;
+
   let pauseExitCheck = null;
   pauseExitCheck = mkCheck("Pause before exit", s.pauseBeforeExit, (v) => {
     const i = getStateIndexById(s.id);
@@ -1527,16 +1529,25 @@ function renderStates() {
       // Loop and Pause-before-exit are mutually exclusive.
       states[i].loop = false;
       loopCheck.input.checked = false;
+
+      // Pause-before-exit implies Exit-on-click (so user can click to continue).
+      states[i].exitOnClick = true;
+      if (exitOnClickCheck) exitOnClickCheck.input.checked = true;
     }
   });
   checks.appendChild(pauseExitCheck.label);
 
   checks.appendChild(
-    mkCheck("Exit on click", s.exitOnClick, (v) => {
+    (exitOnClickCheck = mkCheck("Exit on click", s.exitOnClick, (v) => {
       const i = getStateIndexById(s.id);
       if (i < 0) return;
       states[i].exitOnClick = v;
-    }).label
+      // Keep config consistent: if exit is turned off, pause-before-exit must be off.
+      if (!v && states[i].pauseBeforeExit) {
+        states[i].pauseBeforeExit = false;
+        if (pauseExitCheck) pauseExitCheck.input.checked = false;
+      }
+    })).label
   );
 
   checks.appendChild(
@@ -1777,7 +1788,7 @@ function buildExportHandlerCode(states, clickUrl) {
       end: parseFloat(s.end.toFixed(4)),
       loop: Boolean(s.loop),
       pauseBeforeExit: Boolean(s.pauseBeforeExit) && !Boolean(s.loop),
-      exitOnClick: Boolean(s.exitOnClick),
+      exitOnClick: Boolean(s.exitOnClick) || Boolean(s.pauseBeforeExit),
       openOnEnter: Boolean(s.openOnEnter),
       openOnClick: Boolean(s.openOnClick),
       cursorOn: Boolean(s.cursorOn),
