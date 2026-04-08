@@ -81,6 +81,7 @@ function getStateRuntime(id) {
   if (!rt) {
     rt = {
       unlocked: false,
+      pausedBeforeExitDone: false,
     };
     stateRuntimeById.set(id, rt);
   }
@@ -282,7 +283,13 @@ function wirePreviewOverlayAndSync(doc) {
           if (cur.exitOnClick && states[curIdx + 1]) {
             const rt = getStateRuntime(cur.id);
             if (rt) rt.unlocked = true;
-            setAllCurrentTimeKeepingPlay(cur.end);
+            if (wantPlaying) {
+              setAllCurrentTimeKeepingPlay(cur.end);
+            } else {
+              // If we're paused (e.g. pause-before-exit), resume on user gesture.
+              setAllCurrentTime(cur.end);
+              playAll();
+            }
             return;
           }
 
@@ -633,6 +640,7 @@ function resetStates(durationSec) {
     start: 0,
     end: duration,
     loop: false,
+    pauseBeforeExit: false,
     exitOnClick: false,
     openOnEnter: false,
     openOnClick: false,
@@ -1056,6 +1064,14 @@ function runPreviewStateMachine() {
   const previousState = lastPreviewStateId !== null ? getStateById(lastPreviewStateId) : null;
   const threshold = 1 / FRAME_RATE;
 
+  const getLastFrameTimeForState = (st) => {
+    if (!st) return 0;
+    const end = Number(st.end);
+    const start = Number(st.start);
+    const last = end - threshold;
+    return clamp(Number.isFinite(last) ? last : end, Number.isFinite(start) ? start : 0, videoDuration || 0);
+  };
+
   // Loop guard: check the PREVIOUSLY active state first.
   // Reason: if a RAF tick jumps past cur.end in one frame, selectStateByTime
   // already returns the NEXT state — so checking loop on 'cur' would be too late.
@@ -1071,6 +1087,24 @@ function runPreviewStateMachine() {
     }
   }
 
+  // Pause-before-exit guard: also check the PREVIOUSLY active state first.
+  if (
+    previousState
+    && previousState.pauseBeforeExit
+    && !previousState.loop
+    && wantPlaying
+    && t >= previousState.end - threshold
+  ) {
+    const prevRt = getStateRuntime(previousState.id);
+    const alreadyPaused = Boolean(prevRt && prevRt.pausedBeforeExitDone);
+    if (!alreadyPaused) {
+      if (prevRt) prevRt.pausedBeforeExitDone = true;
+      pauseAll();
+      setAllCurrentTimeSnapped(getLastFrameTimeForState(previousState));
+      return;
+    }
+  }
+
   const cur = selectStateByTimeBiased(t, lastPreviewStateId);
   if (!cur) return;
 
@@ -1082,12 +1116,32 @@ function runPreviewStateMachine() {
     // Leaving previous state: clear its transient runtime so it can't bleed.
     if (lastPreviewStateId !== null) {
       const prevRt = getStateRuntime(lastPreviewStateId);
-      if (prevRt) prevRt.unlocked = false;
+      if (prevRt) {
+        prevRt.unlocked = false;
+        prevRt.pausedBeforeExitDone = false;
+      }
     }
 
     lastPreviewStateId = cur.id;
     if (cur.openOnEnter) previewTriggerDownload("Open download on enter");
     updateRuntimeStatus();
+  }
+
+  // Pause at the last frame of this state (once), then allow exit on resume.
+  if (
+    cur.pauseBeforeExit
+    && !cur.loop
+    && wantPlaying
+    && t >= cur.end - threshold
+  ) {
+    const curRt = getStateRuntime(cur.id);
+    const alreadyPaused = Boolean(curRt && curRt.pausedBeforeExitDone);
+    if (!alreadyPaused) {
+      if (curRt) curRt.pausedBeforeExitDone = true;
+      pauseAll();
+      setAllCurrentTimeSnapped(getLastFrameTimeForState(cur));
+      return;
+    }
   }
 
   // Loop guard on current state (handles the common in-state case).
@@ -1449,23 +1503,40 @@ function renderStates() {
     txt.textContent = labelText;
     label.appendChild(input);
     label.appendChild(txt);
-    return label;
+    return { label, input };
   };
 
-  checks.appendChild(
-    mkCheck("Loop", s.loop, (v) => {
-      const i = getStateIndexById(s.id);
-      if (i < 0) return;
-      states[i].loop = v;
-    })
-  );
+  const loopCheck = mkCheck("Loop", s.loop, (v) => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    states[i].loop = v;
+    if (v) {
+      // Loop and Pause-before-exit are mutually exclusive.
+      states[i].pauseBeforeExit = false;
+      if (pauseExitCheck) pauseExitCheck.input.checked = false;
+    }
+  });
+  checks.appendChild(loopCheck.label);
+
+  let pauseExitCheck = null;
+  pauseExitCheck = mkCheck("Pause before exit", s.pauseBeforeExit, (v) => {
+    const i = getStateIndexById(s.id);
+    if (i < 0) return;
+    states[i].pauseBeforeExit = v;
+    if (v) {
+      // Loop and Pause-before-exit are mutually exclusive.
+      states[i].loop = false;
+      loopCheck.input.checked = false;
+    }
+  });
+  checks.appendChild(pauseExitCheck.label);
 
   checks.appendChild(
     mkCheck("Exit on click", s.exitOnClick, (v) => {
       const i = getStateIndexById(s.id);
       if (i < 0) return;
       states[i].exitOnClick = v;
-    })
+    }).label
   );
 
   checks.appendChild(
@@ -1473,7 +1544,7 @@ function renderStates() {
       const i = getStateIndexById(s.id);
       if (i < 0) return;
       states[i].openOnEnter = v;
-    })
+    }).label
   );
 
   checks.appendChild(
@@ -1481,7 +1552,7 @@ function renderStates() {
       const i = getStateIndexById(s.id);
       if (i < 0) return;
       states[i].openOnClick = v;
-    })
+    }).label
   );
 
   wrap.appendChild(checks);
@@ -1705,6 +1776,7 @@ function buildExportHandlerCode(states, clickUrl) {
       start: parseFloat(s.start.toFixed(4)),
       end: parseFloat(s.end.toFixed(4)),
       loop: Boolean(s.loop),
+      pauseBeforeExit: Boolean(s.pauseBeforeExit) && !Boolean(s.loop),
       exitOnClick: Boolean(s.exitOnClick),
       openOnEnter: Boolean(s.openOnEnter),
       openOnClick: Boolean(s.openOnClick),
@@ -1731,6 +1803,7 @@ function buildExportHandlerCode(states, clickUrl) {
             var _idx = 0;
             var _unlocked = false;
             var _thr = 1 / 30;
+            var _pauseDone = _states.map(function () { return false; });
           function _clamp(n, lo, hi) {
             n = Number(n);
             if (!isFinite(n)) return lo;
@@ -1769,6 +1842,9 @@ function buildExportHandlerCode(states, clickUrl) {
                     _v.currentTime = _bg.currentTime = _states[_idx].start;
                     if (_states[_idx].openOnEnter) _open();
               _applyCursor();
+                // If we were paused (e.g. pauseBeforeExit), resume on user gesture.
+                try { if (_v && _v.paused) _v.play(); } catch (e) {}
+                try { if (_bg && _bg.paused) _bg.play(); } catch (e) {}
                     return;
                 }
                 if (c.openOnClick) _open();
@@ -1787,6 +1863,18 @@ function buildExportHandlerCode(states, clickUrl) {
                 var t = _v.currentTime;
                 var c = _states[_idx];
                 if (c) {
+                if (c.pauseBeforeExit && !_pauseDone[_idx]) {
+                  if (t >= c.end - _thr) {
+                    _pauseDone[_idx] = true;
+                    var last = Math.max(c.start, c.end - _thr);
+                    try { _v.pause(); } catch (e) {}
+                    try { _bg.pause(); } catch (e) {}
+                    _v.currentTime = _bg.currentTime = last;
+                    _applyCursor();
+                    requestAnimationFrame(_tick);
+                    return;
+                  }
+                }
                     if (c.loop && !_unlocked) {
                         // Loop back to state start.
                         if (t >= c.end - _thr) { _v.currentTime = _bg.currentTime = c.start; }
