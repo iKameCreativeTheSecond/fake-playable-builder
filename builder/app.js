@@ -1,6 +1,6 @@
 /* Minimal static builder for assets/templateHTML/Template.html */
 
-const TEMPLATE_PATH = "assets/templateHTML/Template.html";
+const TEMPLATE_PATH = "assets/templateHTML/Template_applovin.html";
 const CURSOR_GIF_PATH = "assets/cursor/Cursor.gif";
 
 const titleInput = document.getElementById("titleInput");

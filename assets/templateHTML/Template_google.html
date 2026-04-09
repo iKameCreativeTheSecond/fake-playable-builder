@@ -46,6 +46,14 @@
             z-index: 9999;
         }
     </style>
+    <script type="text/javascript" src="https://tpc.googlesyndication.com/pagead/gadgets/html5/api/exitapi.js"> </script>
+    <script>
+        // Network specific download logic
+        function download() {
+            console.log("IKAME: Download function called");
+            ExitApi.exit();
+        }
+    </script>
     <script>
         let mp4_portrait = "data:video/mp4;base64, (THAY ĐOẠN MÃ BASE64 CONVERT TỪ VIDEO VÀO ĐÂY)"
         let currentOrientation = "";
@@ -205,12 +213,7 @@
                     stateClick.state_1++;
                 break;
                 case 3:
-                    const linkDownload = "https://play.google.com/store/apps/details?id=com.ig.cannon.heroes";
-                    if (window.mraid) {
-                        window.mraid.open();
-                    } else {
-                        window.open(linkDownload, "_blank");
-                    }
+                    download();
                 break;
             }
         }
