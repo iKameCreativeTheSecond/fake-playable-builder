@@ -48,6 +48,7 @@ let videoDuration = 0;
 let states = [];
 let selectedStateId = null;
 let nextStateId = 1;
+let pendingImportedProject = null;
 const stateElements = new Map();
 
 const MIN_GAP_SEC = 0.01;
@@ -390,6 +391,183 @@ function blobToDataUrl(blob) {
   });
 }
 
+function isMp4File(file) {
+  if (!file) return false;
+  return file.type === "video/mp4" || /\.mp4$/i.test(file.name || "");
+}
+
+function isHtmlFile(file) {
+  if (!file) return false;
+  return /html/i.test(file.type || "") || /\.html?$/i.test(file.name || "");
+}
+
+function decodeHtmlEntities(text) {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = String(text || "");
+  return textarea.value;
+}
+
+function parseJsonLiteralMatch(source, pattern) {
+  const match = source.match(pattern);
+  if (!match) return "";
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+function parseEmbeddedStates(source) {
+  const match = source.match(/var\s+_states\s*=\s*(\[[\s\S]*?\])\s*;/);
+  if (!match) return null;
+
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseImportedPlayableHtml(source) {
+  const titleMatch = source.match(/<title>([\s\S]*?)<\/title>/i);
+  const title = titleMatch ? decodeHtmlEntities(titleMatch[1].trim()) : "";
+  const clickUrl = parseJsonLiteralMatch(
+    source,
+    /const\s+linkDownload\s*=\s*("(?:[^"\\]|\\.)*")\s*;/
+  ) || parseJsonLiteralMatch(
+    source,
+    /var\s+_url\s*=\s*("(?:[^"\\]|\\.)*")\s*;/
+  );
+  const videoDataUrl = parseJsonLiteralMatch(
+    source,
+    /(?:let|var|const)\s+mp4_portrait\s*=\s*("(?:[^"\\]|\\.)*")\s*;?/
+  );
+  const importedStates = parseEmbeddedStates(source);
+
+  if (!videoDataUrl || !/^data:video\/mp4;base64,/i.test(videoDataUrl)) {
+    throw new Error("Imported HTML does not contain an embedded MP4 data URL.");
+  }
+
+  if (!importedStates || importedStates.length === 0) {
+    throw new Error("Imported HTML does not contain builder state data.");
+  }
+
+  return {
+    title,
+    clickUrl,
+    videoDataUrl,
+    states: importedStates,
+  };
+}
+
+async function dataUrlToFile(dataUrl, fileName) {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  return new File([blob], fileName, {
+    type: blob.type || "video/mp4",
+  });
+}
+
+function normalizeImportedStates(rawStates, durationSec) {
+  const duration = Math.max(0, Number(durationSec) || 0);
+  if (!Array.isArray(rawStates) || rawStates.length === 0 || duration <= 0) return [];
+
+  const sanitized = rawStates.map((raw) => ({
+    start: Number(raw?.start),
+    end: Number(raw?.end),
+    loop: Boolean(raw?.loop),
+    pauseBeforeExit: Boolean(raw?.pauseBeforeExit) && !Boolean(raw?.loop),
+    exitOnClick: Boolean(raw?.exitOnClick),
+    openOnEnter: Boolean(raw?.openOnEnter),
+    openOnClick: Boolean(raw?.openOnClick),
+    cursorOn: Boolean(raw?.cursorOn),
+    cursorX: Number.isFinite(Number(raw?.cursorX)) ? clamp(Number(raw.cursorX), 0, 100) : 50,
+    cursorY: Number.isFinite(Number(raw?.cursorY)) ? clamp(Number(raw.cursorY), 0, 100) : 50,
+    cursorScale: Number.isFinite(Number(raw?.cursorScale)) ? clamp(Number(raw.cursorScale), 10, 300) : 100,
+  }));
+
+  const normalized = [];
+  let previousEnd = 0;
+
+  for (let i = 0; i < sanitized.length; i++) {
+    const raw = sanitized[i];
+    const remainingStates = sanitized.length - i - 1;
+    const maxEnd = Math.max(0, duration - remainingStates * MIN_GAP_SEC);
+    const start = i === 0 ? 0 : previousEnd;
+    const rawEnd = Number.isFinite(raw.end) ? raw.end : duration;
+    const end = i === sanitized.length - 1
+      ? duration
+      : clamp(rawEnd, start + MIN_GAP_SEC, maxEnd);
+
+    normalized.push({
+      id: nextStateId++,
+      start,
+      end: Math.max(end, start + MIN_GAP_SEC),
+      loop: raw.loop,
+      pauseBeforeExit: raw.pauseBeforeExit,
+      exitOnClick: raw.exitOnClick,
+      openOnEnter: raw.openOnEnter,
+      openOnClick: raw.openOnClick,
+      cursorOn: raw.cursorOn,
+      cursorX: raw.cursorX,
+      cursorY: raw.cursorY,
+      cursorScale: raw.cursorScale,
+    });
+
+    previousEnd = normalized[normalized.length - 1].end;
+  }
+
+  if (normalized.length) {
+    normalized[normalized.length - 1].end = duration;
+  }
+
+  return normalized;
+}
+
+function restoreImportedProject(durationSec) {
+  const imported = pendingImportedProject;
+  pendingImportedProject = null;
+
+  const importedStates = imported ? normalizeImportedStates(imported.states, durationSec) : [];
+  if (importedStates.length === 0) {
+    resetStates(durationSec);
+    return;
+  }
+
+  videoDuration = Math.max(0, Number(durationSec) || 0);
+  states = importedStates;
+  selectedStateId = states[0]?.id ?? null;
+
+  renderTimeline();
+  renderStates();
+  updateStateCounter();
+  updateUiState();
+  updateTimelineMeta();
+  updatePlayhead();
+
+  if (imported?.sourceName) {
+    setStatus(`Imported ${imported.sourceName}. You can edit the recovered states now.`);
+  }
+}
+
+async function importPlayableHtml(file) {
+  const source = await file.text();
+  const imported = parseImportedPlayableHtml(source);
+  const importBaseName = toSafeFilename(imported.title || file.name.replace(/\.[^.]+$/, "") || "Imported Playable");
+  const videoFile = await dataUrlToFile(imported.videoDataUrl, `${importBaseName}.mp4`);
+
+  titleInput.value = imported.title || importBaseName;
+  clickUrlInput.value = imported.clickUrl || "";
+  pendingImportedProject = {
+    sourceName: file.name || "imported playable",
+    states: imported.states,
+  };
+
+  setStatus("Imported playable HTML. Loading embedded MP4...");
+  setSelectedFile(videoFile);
+}
+
 async function ensureCursorGifDataUrl() {
   if (cursorGifDataUrl) return cursorGifDataUrl;
   if (cursorGifLoadPromise) return cursorGifLoadPromise;
@@ -461,6 +639,10 @@ function toSafeFilename(inputName) {
 
 function setSelectedFile(file) {
   selectedFile = file;
+
+  if (!file) {
+    pendingImportedProject = null;
+  }
 
   if (selectedFileObjectUrl) {
     URL.revokeObjectURL(selectedFileObjectUrl);
@@ -1858,32 +2040,67 @@ function renderStates() {
   });
 });
 
-dropZone.addEventListener("drop", (e) => {
+dropZone.addEventListener("drop", async (e) => {
   const file = e.dataTransfer?.files?.[0] || null;
   if (!file) return;
-  if (file.type !== "video/mp4") {
-    setStatus("Please drop an MP4 file.");
+
+  try {
+    if (isMp4File(file)) {
+      pendingImportedProject = null;
+      setStatus("");
+      setSelectedFile(file);
+      return;
+    }
+
+    if (isHtmlFile(file)) {
+      await importPlayableHtml(file);
+      return;
+    }
+  } catch (err) {
+    pendingImportedProject = null;
+    setStatus("Failed to import HTML playable. Ensure it was exported from this builder.");
+    // eslint-disable-next-line no-console
+    console.error(err);
     return;
   }
-  setStatus("");
-  setSelectedFile(file);
+
+  setStatus("Please drop an MP4 or exported HTML file.");
 });
 
 // File chooser
-fileInput.addEventListener("change", () => {
+fileInput.addEventListener("change", async () => {
   const file = fileInput.files?.[0] || null;
   if (!file) {
+    pendingImportedProject = null;
     setSelectedFile(null);
     return;
   }
-  if (file.type !== "video/mp4") {
-    setStatus("Please choose an MP4 file.");
+
+  try {
+    if (isMp4File(file)) {
+      pendingImportedProject = null;
+      setStatus("");
+      setSelectedFile(file);
+      return;
+    }
+
+    if (isHtmlFile(file)) {
+      await importPlayableHtml(file);
+      return;
+    }
+  } catch (err) {
+    pendingImportedProject = null;
+    setStatus("Failed to import HTML playable. Ensure it was exported from this builder.");
+    // eslint-disable-next-line no-console
+    console.error(err);
     fileInput.value = "";
     setSelectedFile(null);
     return;
   }
-  setStatus("");
-  setSelectedFile(file);
+
+  setStatus("Please choose an MP4 or exported HTML file.");
+  fileInput.value = "";
+  setSelectedFile(null);
 });
 
 // ─── Export state-machine injection ─────────────────────────────────────────
@@ -2258,7 +2475,8 @@ timelineEl.addEventListener("keydown", (e) => {
 });
 
 controlVideo.addEventListener("loadedmetadata", () => {
-  resetStates(controlVideo.duration);
+  if (pendingImportedProject) restoreImportedProject(controlVideo.duration);
+  else resetStates(controlVideo.duration);
   updateTimelineMeta();
   updatePlayhead();
   void maybeAutoRenderIframePreview();
