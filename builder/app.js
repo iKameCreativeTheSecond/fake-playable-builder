@@ -435,12 +435,18 @@ function applyInputsToTemplate(inputTemplate, { title, videoDataUrl, clickUrl })
 
 function downloadHtml(filename, htmlText) {
   const blob = new Blob([htmlText], { type: "text/html;charset=utf-8" });
+  downloadBlob(filename, blob);
+}
+
+function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function toSafeFilename(inputName) {
@@ -2059,6 +2065,10 @@ exportBtn.addEventListener("click", async () => {
     setStatus("Templates not fully loaded.");
     return;
   }
+  if (!window.JSZip) {
+    setStatus("JSZip failed to load. Refresh the page and try again.");
+    return;
+  }
   if (!selectedFile) {
     setStatus("Choose an MP4 first.");
     return;
@@ -2080,7 +2090,7 @@ exportBtn.addEventListener("click", async () => {
     setStatus("Converting video to Base64... (may take a while)");
     const videoDataUrl = await mp4ToDataUrl(selectedFile);
 
-    // Export each template
+    const zip = new window.JSZip();
     const templateKeys = Object.keys(TEMPLATES);
     for (let i = 0; i < templateKeys.length; i++) {
       const key = templateKeys[i];
@@ -2092,17 +2102,20 @@ exportBtn.addEventListener("click", async () => {
         clickUrl,
       });
       const finalOut = applyStatesToTemplate(out, states, clickUrl, cursorDataUrl);
-      
+
       const filename = `${safeTitle}_${key}.html`;
-      downloadHtml(filename, finalOut);
-      
-      // Small delay between downloads to avoid browser rate limiting
-      if (i < templateKeys.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
+      zip.file(filename, finalOut);
     }
 
-    setStatus("Done. All 4 templates downloaded.");
+    setStatus("Creating ZIP...");
+    const zipBlob = await zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+    });
+    downloadBlob(`${safeTitle}_playables.zip`, zipBlob);
+
+    setStatus(`Done. ZIP downloaded with ${templateKeys.length} HTML files.`);
   } catch (err) {
     setStatus("Export failed. See console for details.");
     // eslint-disable-next-line no-console

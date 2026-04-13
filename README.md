@@ -5,7 +5,7 @@ Minimal static web page that takes:
 - a click URL
 - an MP4 video
 
-…and exports a single HTML file based on `assets/templateHTML/Template.html` with the video embedded as a Base64 data URL.
+…and exports a ZIP file containing playable HTML variants with the video embedded as a Base64 data URL.
 
 ## Run locally
 
@@ -31,8 +31,10 @@ npx serve
 
 ## Notes
 
+- Export downloads a single ZIP containing one HTML file per template.
 - The exported HTML can be very large because the MP4 is embedded as Base64.
 - If you enable **Cursor (GIF)** on any state, the exported HTML also embeds `assets/cursor/Cursor.gif` as a Base64 data URL.
+- JSZip is loaded from a CDN at runtime for ZIP generation.
 
 ## Deploy to GitLab Pages (CI/CD)
 
@@ -63,4 +65,4 @@ The URL is typically:
 ### Notes
 
 - All asset references in `index.html` are relative, so they work when served under the GitLab Pages subpath.
-- The exported single-HTML file is downloaded to your computer (it is not automatically uploaded to GitLab Pages).
+- The exported ZIP file is downloaded to your computer (it is not automatically uploaded to GitLab Pages).
