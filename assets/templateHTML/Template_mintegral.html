@@ -49,13 +49,8 @@
     <script>
         // Network specific download logic
         function download(url) {
-            console.log("IKAME: Download function called");
-
-            if (window.mraid) {
-                window.mraid.open(url);
-            } else {
-                window.open(url, "_blank");
-            }
+            window.install && window.install()
+            window.gameEnd && window.gameEnd();
         }
     </script>
 
@@ -68,6 +63,14 @@
             const userAgent = navigator.userAgent.toLowerCase();
             const isTablet = /(ipad|tablet|(android(?!.*mobile))|(windows(?!.*phone)(.*touch))|kindle|playbook|silk|(puffin(?!.*(IP|AP|WP))))/.test(userAgent);
             return isTablet;
+        }
+        
+        function gameStart() {
+            showVideo();
+        }
+
+        function gameClose() {
+            
         }
 
         function handleSize() {
@@ -192,36 +195,9 @@
             handleSize();
         };
 
-        function viewableChangeHandler(viewable) {
-            if(viewable) {
-                // If the ad is viewable, show the ad:
-                showVideo(); 
-            } else {
-                // If not, pause the ad.
-            }
-        }
-
-        function onSdkReady() {
-            // The viewableChange event fires if the ad container's viewability status changes.
-            // Add a listener for the viewabilityChange event, to handle pausing and resuming: 
-            mraid.addEventListener('viewableChange',viewableChangeHandler);
-            // The isViewable method returns whether the ad container is viewable on the screen.
-            if (mraid.isViewable()) {
-                // If the ad container is visible, play the ad:
-                showVideo(); 
-            }
-        }
-
         window.onload = function() {
             handleSize();
-
-            if (mraid.getState()==='loading') {
-                // If the SDK is still loading, add a listener for the 'ready' event:
-                mraid.addEventListener('ready', onSdkReady);
-                // Otherwise, if the SDK is ready, execute your function:
-            } else {
-                onSdkReady(); 
-            }
+            window.gameReady && window.gameReady();
         };
     </script>
     <script>

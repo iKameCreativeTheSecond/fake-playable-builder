@@ -1,6 +1,11 @@
 /* Minimal static builder for assets/templateHTML/Template.html */
 
-const TEMPLATE_PATH = "assets/templateHTML/Template_applovin.html";
+const TEMPLATES = {
+  applovin: "assets/templateHTML/Template_applovin.html",
+  google: "assets/templateHTML/Template_google.html",
+  unity: "assets/templateHTML/Template_unity.html",
+  mintegral: "assets/templateHTML/Template_mintegral.html"
+};
 const CURSOR_GIF_PATH = "assets/cursor/Cursor.gif";
 
 const titleInput = document.getElementById("titleInput");
@@ -32,7 +37,7 @@ const replayBtn = document.getElementById("replayBtn");
 const prevFrameBtn = document.getElementById("prevFrameBtn");
 const nextFrameBtn = document.getElementById("nextFrameBtn");
 
-let templateHtml = "";
+let templatesHtml = {};
 let selectedFile = null;
 let selectedFileObjectUrl = null;
 
@@ -165,7 +170,8 @@ function formatBytes(bytes) {
 }
 
 function updateUiState() {
-  const canExport = Boolean(templateHtml) && Boolean(selectedFile);
+  const allTemplatesLoaded = Object.keys(TEMPLATES).every(key => Boolean(templatesHtml[key]));
+  const canExport = allTemplatesLoaded && Boolean(selectedFile);
   exportBtn.disabled = !canExport;
   if (previewBtn) previewBtn.disabled = !canExport;
   if (previewPopoutBtn) previewPopoutBtn.disabled = !canExport;
@@ -212,7 +218,7 @@ function updateStateCounter() {
 async function maybeAutoRenderIframePreview() {
   if (!autoPreviewRequested) return;
   if (autoPreviewInFlight) return;
-  if (!templateHtml || !selectedFile) return;
+  if (!templatesHtml.applovin || !selectedFile) return;
   if (!Number.isFinite(videoDuration) || videoDuration <= 0) return;
   if (!selectedFileObjectUrl) return;
   if (!states || states.length === 0) return;
@@ -341,15 +347,22 @@ function wirePreviewOverlayAndSync(doc) {
 
 async function loadTemplate() {
   try {
-    setStatus("Loading template...");
-    const res = await fetch(TEMPLATE_PATH, { cache: "no-store" });
-    if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-    templateHtml = await res.text();
-    setStatus("Template loaded.");
+    setStatus("Loading templates...");
+    const keys = Object.keys(TEMPLATES);
+    const promises = keys.map(key =>
+      fetch(TEMPLATES[key], { cache: "no-store" })
+        .then(res => {
+          if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+          return res.text();
+        })
+        .then(html => (templatesHtml[key] = html))
+    );
+    await Promise.all(promises);
+    setStatus("All templates loaded.");
   } catch (err) {
-    templateHtml = "";
+    templatesHtml = {};
     setStatus(
-      "Failed to load template. Run this page via a local server (not file://)."
+      "Failed to load templates. Run this page via a local server (not file://)."
     );
     // eslint-disable-next-line no-console
     console.error(err);
@@ -482,7 +495,7 @@ function setSelectedFile(file) {
 }
 
 async function renderPreview() {
-  if (!templateHtml || !selectedFile) return;
+  if (!templatesHtml.applovin || !selectedFile) return;
 
   const title = titleInput.value.trim() || "Playable";
   const clickUrl = clickUrlInput.value.trim() || "";
@@ -506,7 +519,7 @@ async function renderPreview() {
     }
   }
 
-  const out = applyInputsToTemplate(templateHtml, {
+  const out = applyInputsToTemplate(templatesHtml.applovin, {
     title,
     videoDataUrl: selectedFileObjectUrl,
     clickUrl,
@@ -533,7 +546,7 @@ async function renderPreview() {
 }
 
 async function renderPopoutFinalPreview() {
-  if (!templateHtml || !selectedFile) return;
+  if (!templatesHtml.applovin || !selectedFile) return;
 
   const title = titleInput.value.trim() || "Playable";
   const clickUrl = clickUrlInput.value.trim() || "";
@@ -556,7 +569,7 @@ async function renderPopoutFinalPreview() {
     }
   }
 
-  const out = applyInputsToTemplate(templateHtml, {
+  const out = applyInputsToTemplate(templatesHtml.applovin, {
     title,
     videoDataUrl: selectedFileObjectUrl,
     clickUrl,
@@ -1927,8 +1940,7 @@ function buildExportHandlerCode(states, clickUrl) {
           }
             function _open() {
                 if (!_url) return;
-                if (window.mraid) { window.mraid.open(_url); }
-                else { window.open(_url, '_blank'); }
+                download(_url);
             }
             window.__bClick = function () {
                 var c = _states[_idx];
@@ -2042,8 +2054,9 @@ function buildExportHandlerCode(states, clickUrl) {
 
 // Export
 exportBtn.addEventListener("click", async () => {
-  if (!templateHtml) {
-    setStatus("Template not loaded.");
+  const allTemplatesLoaded = Object.keys(TEMPLATES).every(key => Boolean(templatesHtml[key]));
+  if (!allTemplatesLoaded) {
+    setStatus("Templates not fully loaded.");
     return;
   }
   if (!selectedFile) {
@@ -2054,6 +2067,7 @@ exportBtn.addEventListener("click", async () => {
   const title = titleInput.value.trim() || "Playable";
   const clickUrl = clickUrlInput.value.trim() || "";
   const cursorWanted = states.some((s) => Boolean(s && s.cursorOn));
+  const safeTitle = toSafeFilename(title);
 
   try {
     exportBtn.disabled = true;
@@ -2064,22 +2078,31 @@ exportBtn.addEventListener("click", async () => {
     }
 
     setStatus("Converting video to Base64... (may take a while)");
-
     const videoDataUrl = await mp4ToDataUrl(selectedFile);
 
-    setStatus("Generating HTML...");
-    const out = applyInputsToTemplate(templateHtml, {
-      title,
-      videoDataUrl,
-      clickUrl,
-    });
-    const finalOut = applyStatesToTemplate(out, states, clickUrl, cursorDataUrl);
+    // Export each template
+    const templateKeys = Object.keys(TEMPLATES);
+    for (let i = 0; i < templateKeys.length; i++) {
+      const key = templateKeys[i];
+      setStatus(`Generating HTML for ${key}... (${i + 1}/${templateKeys.length})`);
+      
+      const out = applyInputsToTemplate(templatesHtml[key], {
+        title,
+        videoDataUrl,
+        clickUrl,
+      });
+      const finalOut = applyStatesToTemplate(out, states, clickUrl, cursorDataUrl);
+      
+      const filename = `${safeTitle}_${key}.html`;
+      downloadHtml(filename, finalOut);
+      
+      // Small delay between downloads to avoid browser rate limiting
+      if (i < templateKeys.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
 
-    setStatus("Downloading...");
-    const filename = `${toSafeFilename(title)}.html`;
-    downloadHtml(filename, finalOut);
-
-    setStatus("Done.");
+    setStatus("Done. All 4 templates downloaded.");
   } catch (err) {
     setStatus("Export failed. See console for details.");
     // eslint-disable-next-line no-console
@@ -2092,8 +2115,8 @@ exportBtn.addEventListener("click", async () => {
 // Preview
 if (previewBtn) {
   previewBtn.addEventListener("click", async () => {
-    if (!templateHtml) {
-      setStatus("Template not loaded.");
+    if (!templatesHtml.applovin) {
+      setStatus("Templates not loaded.");
       return;
     }
     if (!selectedFile) {
@@ -2101,14 +2124,20 @@ if (previewBtn) {
       return;
     }
     setStatus("");
-    await renderPreview();
+    autoPreviewRequested = false;
+    autoPreviewInFlight = true;
+    try {
+      await renderPreview();
+    } finally {
+      autoPreviewInFlight = false;
+    }
   });
 }
 
 if (previewPopoutBtn) {
   previewPopoutBtn.addEventListener("click", async () => {
-    if (!templateHtml) {
-      setStatus("Template not loaded.");
+    if (!templatesHtml.applovin) {
+      setStatus("Templates not loaded.");
       return;
     }
     if (!selectedFile) {

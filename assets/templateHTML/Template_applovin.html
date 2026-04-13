@@ -48,14 +48,13 @@
     </style>
     <script>
         // Network specific download logic
-        function download() {
-            const linkDownload = "https://play.google.com/store/apps/details?id=com.ig.cannon.heroes";
+        function download(url) {
             console.log("IKAME: Download function called");
 
             if (window.mraid) {
-                window.mraid.open(linkDownload);
+                window.mraid.open(url);
             } else {
-                window.open(linkDownload, "_blank");
+                window.open(url, "_blank");
             }
         }
     </script>
