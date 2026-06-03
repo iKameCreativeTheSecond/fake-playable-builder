@@ -4,7 +4,8 @@ const TEMPLATES = {
   applovin: "assets/templateHTML/Template_applovin.html",
   google: "assets/templateHTML/Template_google.html",
   unity: "assets/templateHTML/Template_unity.html",
-  mintegral: "assets/templateHTML/Template_mintegral.html"
+  mintegral: "assets/templateHTML/Template_mintegral.html",
+  moloco: "assets/templateHTML/Template_moloco.html"
 };
 const CURSOR_GIF_PATH = "assets/cursor/Cursor.gif";
 
